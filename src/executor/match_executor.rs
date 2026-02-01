@@ -388,11 +388,316 @@ impl MatchExecutor {
     fn apply_where_filter(
         &self,
         rows: Vec<Row>,
-        _condition: &Expression,
+        condition: &Expression,
     ) -> ExecutionResult<Vec<Row>> {
-        // TODO: Implement WHERE clause evaluation
-        // For now, just return all rows
-        Ok(rows)
+        let mut filtered = Vec::new();
+
+        for row in rows {
+            let result = self.evaluate_expression(condition, &row)?;
+            if self.is_truthy(&result) {
+                filtered.push(row);
+            }
+        }
+
+        Ok(filtered)
+    }
+
+    /// Evaluate an expression in the context of a row
+    fn evaluate_expression(&self, expr: &Expression, row: &Row) -> ExecutionResult<Value> {
+        match expr {
+            Expression::Literal(lit) => Ok(self.literal_to_value(lit)),
+
+            Expression::Variable(name) => {
+                row.get(name)
+                    .cloned()
+                    .ok_or_else(|| ExecutionError::VariableNotFound(name.clone()))
+            }
+
+            Expression::Property(prop_expr) => {
+                self.evaluate_property(prop_expr, row)
+            }
+
+            Expression::BinaryOp { left, op, right } => {
+                let left_val = self.evaluate_expression(left, row)?;
+                let right_val = self.evaluate_expression(right, row)?;
+                self.evaluate_binary_op(&left_val, op, &right_val)
+            }
+
+            Expression::UnaryOp { op, expr } => {
+                let val = self.evaluate_expression(expr, row)?;
+                self.evaluate_unary_op(op, &val)
+            }
+
+            Expression::Parameter(_) => {
+                Err(ExecutionError::UnsupportedOperation(
+                    "Parameters not yet supported".to_string(),
+                ))
+            }
+
+            Expression::Index { .. } => {
+                Err(ExecutionError::UnsupportedOperation(
+                    "Index expressions not yet supported".to_string(),
+                ))
+            }
+
+            Expression::FunctionCall { name, .. } => {
+                Err(ExecutionError::UnsupportedOperation(
+                    format!("Function '{}' not yet supported", name),
+                ))
+            }
+        }
+    }
+
+    /// Evaluate a property expression (e.g., p.age)
+    fn evaluate_property(&self, prop_expr: &PropertyExpression, row: &Row) -> ExecutionResult<Value> {
+        let base_value = row.get(&prop_expr.base)
+            .ok_or_else(|| ExecutionError::VariableNotFound(prop_expr.base.clone()))?;
+
+        // Get the JSON properties from the vertex/edge
+        let json = match base_value {
+            Value::Vertex(v) => &v.properties,
+            Value::Edge(e) => &e.properties,
+            _ => {
+                return Err(ExecutionError::TypeMismatch {
+                    expected: "Vertex or Edge".to_string(),
+                    actual: format!("{:?}", base_value),
+                });
+            }
+        };
+
+        // Navigate through property path
+        let mut current = json;
+        for prop in &prop_expr.properties {
+            current = current.get(prop)
+                .ok_or_else(|| ExecutionError::PropertyNotFound(prop.clone()))?;
+        }
+
+        Ok(self.json_to_value(current))
+    }
+
+    /// Convert a Literal to a Value
+    fn literal_to_value(&self, lit: &Literal) -> Value {
+        match lit {
+            Literal::Null => Value::Null,
+            Literal::Boolean(b) => Value::Boolean(*b),
+            Literal::Integer(i) => Value::Integer(*i),
+            Literal::Float(f) => Value::Float(*f),
+            Literal::String(s) => Value::String(s.clone()),
+            Literal::List(items) => {
+                Value::List(
+                    items.iter()
+                        .filter_map(|e| match e {
+                            Expression::Literal(lit) => Some(self.literal_to_value(lit)),
+                            _ => None,
+                        })
+                        .collect()
+                )
+            }
+            Literal::Map(map) => {
+                Value::Map(
+                    map.iter()
+                        .filter_map(|(k, v)| match v {
+                            Expression::Literal(lit) => Some((k.clone(), self.literal_to_value(lit))),
+                            _ => None,
+                        })
+                        .collect()
+                )
+            }
+        }
+    }
+
+    /// Convert JSON to Value
+    fn json_to_value(&self, json: &serde_json::Value) -> Value {
+        match json {
+            serde_json::Value::Null => Value::Null,
+            serde_json::Value::Bool(b) => Value::Boolean(*b),
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    Value::Integer(i)
+                } else if let Some(f) = n.as_f64() {
+                    Value::Float(f)
+                } else {
+                    Value::Null
+                }
+            }
+            serde_json::Value::String(s) => Value::String(s.clone()),
+            serde_json::Value::Array(arr) => {
+                Value::List(arr.iter().map(|v| self.json_to_value(v)).collect())
+            }
+            serde_json::Value::Object(obj) => {
+                Value::Map(
+                    obj.iter()
+                        .map(|(k, v)| (k.clone(), self.json_to_value(v)))
+                        .collect()
+                )
+            }
+        }
+    }
+
+    /// Evaluate a binary operation
+    fn evaluate_binary_op(
+        &self,
+        left: &Value,
+        op: &BinaryOperator,
+        right: &Value,
+    ) -> ExecutionResult<Value> {
+        match op {
+            // Comparison operators
+            BinaryOperator::Eq => Ok(Value::Boolean(self.values_eq(left, right))),
+            BinaryOperator::Neq => Ok(Value::Boolean(!self.values_eq(left, right))),
+            BinaryOperator::Lt => self.compare_values(left, right, |ord| ord == std::cmp::Ordering::Less),
+            BinaryOperator::Gt => self.compare_values(left, right, |ord| ord == std::cmp::Ordering::Greater),
+            BinaryOperator::Lte => self.compare_values(left, right, |ord| ord != std::cmp::Ordering::Greater),
+            BinaryOperator::Gte => self.compare_values(left, right, |ord| ord != std::cmp::Ordering::Less),
+
+            // Logical operators
+            BinaryOperator::And => {
+                Ok(Value::Boolean(self.is_truthy(left) && self.is_truthy(right)))
+            }
+            BinaryOperator::Or => {
+                Ok(Value::Boolean(self.is_truthy(left) || self.is_truthy(right)))
+            }
+
+            // Arithmetic operators
+            BinaryOperator::Add => self.arithmetic_op(left, right, |a, b| a + b, |a, b| a + b),
+            BinaryOperator::Subtract => self.arithmetic_op(left, right, |a, b| a - b, |a, b| a - b),
+            BinaryOperator::Multiply => self.arithmetic_op(left, right, |a, b| a * b, |a, b| a * b),
+            BinaryOperator::Divide => {
+                // Check for division by zero
+                match right {
+                    Value::Integer(0) => {
+                        Err(ExecutionError::InvalidExpression("Division by zero".to_string()))
+                    }
+                    Value::Float(f) if *f == 0.0 => {
+                        Err(ExecutionError::InvalidExpression("Division by zero".to_string()))
+                    }
+                    _ => self.arithmetic_op(left, right, |a, b| a / b, |a, b| a / b),
+                }
+            }
+            BinaryOperator::Modulo => {
+                match (left, right) {
+                    (Value::Integer(a), Value::Integer(b)) if *b != 0 => {
+                        Ok(Value::Integer(a % b))
+                    }
+                    _ => Err(ExecutionError::InvalidExpression(
+                        "Modulo requires integer operands".to_string(),
+                    )),
+                }
+            }
+        }
+    }
+
+    /// Evaluate a unary operation
+    fn evaluate_unary_op(&self, op: &UnaryOperator, val: &Value) -> ExecutionResult<Value> {
+        match op {
+            UnaryOperator::Not => Ok(Value::Boolean(!self.is_truthy(val))),
+            UnaryOperator::Minus => {
+                match val {
+                    Value::Integer(i) => Ok(Value::Integer(-i)),
+                    Value::Float(f) => Ok(Value::Float(-f)),
+                    _ => Err(ExecutionError::TypeMismatch {
+                        expected: "Number".to_string(),
+                        actual: format!("{:?}", val),
+                    }),
+                }
+            }
+            UnaryOperator::Plus => {
+                match val {
+                    Value::Integer(_) | Value::Float(_) => Ok(val.clone()),
+                    _ => Err(ExecutionError::TypeMismatch {
+                        expected: "Number".to_string(),
+                        actual: format!("{:?}", val),
+                    }),
+                }
+            }
+        }
+    }
+
+    /// Check if two values are equal
+    fn values_eq(&self, left: &Value, right: &Value) -> bool {
+        match (left, right) {
+            (Value::Null, Value::Null) => true,
+            (Value::Boolean(a), Value::Boolean(b)) => a == b,
+            (Value::Integer(a), Value::Integer(b)) => a == b,
+            (Value::Float(a), Value::Float(b)) => (a - b).abs() < f64::EPSILON,
+            (Value::Integer(a), Value::Float(b)) | (Value::Float(b), Value::Integer(a)) => {
+                (*a as f64 - b).abs() < f64::EPSILON
+            }
+            (Value::String(a), Value::String(b)) => a == b,
+            _ => false,
+        }
+    }
+
+    /// Compare two values and apply a predicate to the ordering
+    fn compare_values<F>(&self, left: &Value, right: &Value, pred: F) -> ExecutionResult<Value>
+    where
+        F: Fn(std::cmp::Ordering) -> bool,
+    {
+        let ordering = match (left, right) {
+            (Value::Integer(a), Value::Integer(b)) => a.cmp(b),
+            (Value::Float(a), Value::Float(b)) => {
+                a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+            }
+            (Value::Integer(a), Value::Float(b)) => {
+                (*a as f64).partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+            }
+            (Value::Float(a), Value::Integer(b)) => {
+                a.partial_cmp(&(*b as f64)).unwrap_or(std::cmp::Ordering::Equal)
+            }
+            (Value::String(a), Value::String(b)) => a.cmp(b),
+            _ => {
+                return Err(ExecutionError::TypeMismatch {
+                    expected: "Comparable types".to_string(),
+                    actual: format!("{:?} vs {:?}", left, right),
+                });
+            }
+        };
+
+        Ok(Value::Boolean(pred(ordering)))
+    }
+
+    /// Perform an arithmetic operation
+    fn arithmetic_op<F, G>(
+        &self,
+        left: &Value,
+        right: &Value,
+        int_op: F,
+        float_op: G,
+    ) -> ExecutionResult<Value>
+    where
+        F: Fn(i64, i64) -> i64,
+        G: Fn(f64, f64) -> f64,
+    {
+        match (left, right) {
+            (Value::Integer(a), Value::Integer(b)) => Ok(Value::Integer(int_op(*a, *b))),
+            (Value::Float(a), Value::Float(b)) => Ok(Value::Float(float_op(*a, *b))),
+            (Value::Integer(a), Value::Float(b)) => Ok(Value::Float(float_op(*a as f64, *b))),
+            (Value::Float(a), Value::Integer(b)) => Ok(Value::Float(float_op(*a, *b as f64))),
+            (Value::String(a), Value::String(b)) if matches!(int_op(1, 0), 1) => {
+                // String concatenation for Add
+                Ok(Value::String(format!("{}{}", a, b)))
+            }
+            _ => Err(ExecutionError::TypeMismatch {
+                expected: "Number".to_string(),
+                actual: format!("{:?} and {:?}", left, right),
+            }),
+        }
+    }
+
+    /// Check if a value is truthy
+    fn is_truthy(&self, val: &Value) -> bool {
+        match val {
+            Value::Null => false,
+            Value::Boolean(b) => *b,
+            Value::Integer(i) => *i != 0,
+            Value::Float(f) => *f != 0.0,
+            Value::String(s) => !s.is_empty(),
+            Value::List(l) => !l.is_empty(),
+            Value::Map(m) => !m.is_empty(),
+            Value::Vertex(_) => true,
+            Value::Edge(_) => true,
+            Value::Path(p) => !p.is_empty(),
+        }
     }
 }
 
@@ -477,5 +782,255 @@ mod tests {
 
         let results = executor.execute(&match_clause, None).await.unwrap();
         assert_eq!(results.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_where_greater_than() {
+        let (storage, _temp) = setup_test_storage().await;
+
+        // Create test data
+        let mut tx = storage.begin_transaction().await.unwrap();
+        tx.create_vertex("Person", serde_json::json!({"name": "Alice", "age": 30}))
+            .await
+            .unwrap();
+        tx.create_vertex("Person", serde_json::json!({"name": "Bob", "age": 25}))
+            .await
+            .unwrap();
+        tx.create_vertex("Person", serde_json::json!({"name": "Charlie", "age": 35}))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        // Execute MATCH with WHERE p.age > 28
+        let executor = MatchExecutor::new(storage.clone());
+        let pattern = Pattern {
+            elements: vec![PatternElement::Node(NodePattern {
+                variable: Some("p".to_string()),
+                label: Some("Person".to_string()),
+                properties: None,
+            })],
+        };
+
+        let match_clause = MatchClause {
+            patterns: vec![pattern],
+        };
+
+        // WHERE p.age > 28
+        let where_clause = WhereClause {
+            condition: Expression::BinaryOp {
+                left: Box::new(Expression::Property(PropertyExpression {
+                    base: "p".to_string(),
+                    properties: vec!["age".to_string()],
+                })),
+                op: BinaryOperator::Gt,
+                right: Box::new(Expression::Literal(Literal::Integer(28))),
+            },
+        };
+
+        let results = executor.execute(&match_clause, Some(&where_clause)).await.unwrap();
+        assert_eq!(results.len(), 2); // Alice (30) and Charlie (35)
+    }
+
+    #[tokio::test]
+    async fn test_where_equals() {
+        let (storage, _temp) = setup_test_storage().await;
+
+        // Create test data
+        let mut tx = storage.begin_transaction().await.unwrap();
+        tx.create_vertex("Person", serde_json::json!({"name": "Alice", "age": 30}))
+            .await
+            .unwrap();
+        tx.create_vertex("Person", serde_json::json!({"name": "Bob", "age": 25}))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        // Execute MATCH with WHERE p.name = 'Alice'
+        let executor = MatchExecutor::new(storage.clone());
+        let pattern = Pattern {
+            elements: vec![PatternElement::Node(NodePattern {
+                variable: Some("p".to_string()),
+                label: Some("Person".to_string()),
+                properties: None,
+            })],
+        };
+
+        let match_clause = MatchClause {
+            patterns: vec![pattern],
+        };
+
+        // WHERE p.name = 'Alice'
+        let where_clause = WhereClause {
+            condition: Expression::BinaryOp {
+                left: Box::new(Expression::Property(PropertyExpression {
+                    base: "p".to_string(),
+                    properties: vec!["name".to_string()],
+                })),
+                op: BinaryOperator::Eq,
+                right: Box::new(Expression::Literal(Literal::String("Alice".to_string()))),
+            },
+        };
+
+        let results = executor.execute(&match_clause, Some(&where_clause)).await.unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_where_and() {
+        let (storage, _temp) = setup_test_storage().await;
+
+        // Create test data
+        let mut tx = storage.begin_transaction().await.unwrap();
+        tx.create_vertex("Person", serde_json::json!({"name": "Alice", "age": 30, "city": "Beijing"}))
+            .await
+            .unwrap();
+        tx.create_vertex("Person", serde_json::json!({"name": "Bob", "age": 30, "city": "Shanghai"}))
+            .await
+            .unwrap();
+        tx.create_vertex("Person", serde_json::json!({"name": "Charlie", "age": 25, "city": "Beijing"}))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        // Execute MATCH with WHERE p.age = 30 AND p.city = 'Beijing'
+        let executor = MatchExecutor::new(storage.clone());
+        let pattern = Pattern {
+            elements: vec![PatternElement::Node(NodePattern {
+                variable: Some("p".to_string()),
+                label: Some("Person".to_string()),
+                properties: None,
+            })],
+        };
+
+        let match_clause = MatchClause {
+            patterns: vec![pattern],
+        };
+
+        // WHERE p.age = 30 AND p.city = 'Beijing'
+        let where_clause = WhereClause {
+            condition: Expression::BinaryOp {
+                left: Box::new(Expression::BinaryOp {
+                    left: Box::new(Expression::Property(PropertyExpression {
+                        base: "p".to_string(),
+                        properties: vec!["age".to_string()],
+                    })),
+                    op: BinaryOperator::Eq,
+                    right: Box::new(Expression::Literal(Literal::Integer(30))),
+                }),
+                op: BinaryOperator::And,
+                right: Box::new(Expression::BinaryOp {
+                    left: Box::new(Expression::Property(PropertyExpression {
+                        base: "p".to_string(),
+                        properties: vec!["city".to_string()],
+                    })),
+                    op: BinaryOperator::Eq,
+                    right: Box::new(Expression::Literal(Literal::String("Beijing".to_string()))),
+                }),
+            },
+        };
+
+        let results = executor.execute(&match_clause, Some(&where_clause)).await.unwrap();
+        assert_eq!(results.len(), 1); // Only Alice
+    }
+
+    #[tokio::test]
+    async fn test_where_or() {
+        let (storage, _temp) = setup_test_storage().await;
+
+        // Create test data
+        let mut tx = storage.begin_transaction().await.unwrap();
+        tx.create_vertex("Person", serde_json::json!({"name": "Alice", "age": 30}))
+            .await
+            .unwrap();
+        tx.create_vertex("Person", serde_json::json!({"name": "Bob", "age": 25}))
+            .await
+            .unwrap();
+        tx.create_vertex("Person", serde_json::json!({"name": "Charlie", "age": 35}))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        // Execute MATCH with WHERE p.age < 26 OR p.age > 34
+        let executor = MatchExecutor::new(storage.clone());
+        let pattern = Pattern {
+            elements: vec![PatternElement::Node(NodePattern {
+                variable: Some("p".to_string()),
+                label: Some("Person".to_string()),
+                properties: None,
+            })],
+        };
+
+        let match_clause = MatchClause {
+            patterns: vec![pattern],
+        };
+
+        // WHERE p.age < 26 OR p.age > 34
+        let where_clause = WhereClause {
+            condition: Expression::BinaryOp {
+                left: Box::new(Expression::BinaryOp {
+                    left: Box::new(Expression::Property(PropertyExpression {
+                        base: "p".to_string(),
+                        properties: vec!["age".to_string()],
+                    })),
+                    op: BinaryOperator::Lt,
+                    right: Box::new(Expression::Literal(Literal::Integer(26))),
+                }),
+                op: BinaryOperator::Or,
+                right: Box::new(Expression::BinaryOp {
+                    left: Box::new(Expression::Property(PropertyExpression {
+                        base: "p".to_string(),
+                        properties: vec!["age".to_string()],
+                    })),
+                    op: BinaryOperator::Gt,
+                    right: Box::new(Expression::Literal(Literal::Integer(34))),
+                }),
+            },
+        };
+
+        let results = executor.execute(&match_clause, Some(&where_clause)).await.unwrap();
+        assert_eq!(results.len(), 2); // Bob (25) and Charlie (35)
+    }
+
+    #[tokio::test]
+    async fn test_where_not() {
+        let (storage, _temp) = setup_test_storage().await;
+
+        // Create test data
+        let mut tx = storage.begin_transaction().await.unwrap();
+        tx.create_vertex("Person", serde_json::json!({"name": "Alice", "active": true}))
+            .await
+            .unwrap();
+        tx.create_vertex("Person", serde_json::json!({"name": "Bob", "active": false}))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        // Execute MATCH with WHERE NOT p.active
+        let executor = MatchExecutor::new(storage.clone());
+        let pattern = Pattern {
+            elements: vec![PatternElement::Node(NodePattern {
+                variable: Some("p".to_string()),
+                label: Some("Person".to_string()),
+                properties: None,
+            })],
+        };
+
+        let match_clause = MatchClause {
+            patterns: vec![pattern],
+        };
+
+        // WHERE NOT p.active
+        let where_clause = WhereClause {
+            condition: Expression::UnaryOp {
+                op: UnaryOperator::Not,
+                expr: Box::new(Expression::Property(PropertyExpression {
+                    base: "p".to_string(),
+                    properties: vec!["active".to_string()],
+                })),
+            },
+        };
+
+        let results = executor.execute(&match_clause, Some(&where_clause)).await.unwrap();
+        assert_eq!(results.len(), 1); // Only Bob
     }
 }

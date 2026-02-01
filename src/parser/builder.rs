@@ -447,6 +447,49 @@ fn build_expression(pair: Pair<Rule>) -> ParseResult<Expression> {
                 return build_expression(inner_pairs[0].clone());
             }
 
+            // Handle postfix expression with property lookups: identifier.property.property...
+            if pair.as_rule() == Rule::postfix_expression {
+                // Check if we have property lookups
+                let has_property_lookups = inner_pairs.iter().any(|p| p.as_rule() == Rule::property_lookup);
+                if has_property_lookups {
+                    // Build property expression from identifier and property lookups
+                    let mut base: Option<String> = None;
+                    let mut properties: Vec<String> = Vec::new();
+
+                    for inner_pair in &inner_pairs {
+                        match inner_pair.as_rule() {
+                            Rule::primary_expression => {
+                                // Get the identifier from primary_expression
+                                let primary_inner = inner_pair.clone().into_inner().next();
+                                if let Some(id_pair) = primary_inner {
+                                    if id_pair.as_rule() == Rule::identifier {
+                                        base = Some(id_pair.as_str().to_string());
+                                    }
+                                }
+                            }
+                            Rule::property_lookup => {
+                                // Get property name from property_lookup (skip the dot)
+                                if let Some(id_pair) = inner_pair.clone().into_inner().next() {
+                                    if id_pair.as_rule() == Rule::identifier {
+                                        properties.push(id_pair.as_str().to_string());
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    if let Some(base_name) = base {
+                        if !properties.is_empty() {
+                            return Ok(Expression::Property(PropertyExpression {
+                                base: base_name,
+                                properties,
+                            }));
+                        }
+                    }
+                }
+            }
+
             // Binary expression
             if inner_pairs.len() >= 3 {
                 let left = build_expression(inner_pairs[0].clone())?;
