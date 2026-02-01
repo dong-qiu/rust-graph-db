@@ -1,0 +1,23 @@
+{
+  "workload_type": "Write",
+  "threads": 4,
+  "duration_secs": 10,
+  "total_operations": 2396157,
+  "successful_operations": 2396157,
+  "failed_operations": 0,
+  "throughput_ops_per_sec": 239614.13052744506,
+  "latencies_ms": {
+    "min": 0.003666,
+    "max": 10.622083,
+    "mean": 0.015798771790828593,
+    "p50": 0.011375,
+    "p95": 0.03025,
+    "p99": 0.058417
+  },
+  "per_thread_ops": [
+    599039,
+    599039,
+    599039,
+    599039
+  ]
+}

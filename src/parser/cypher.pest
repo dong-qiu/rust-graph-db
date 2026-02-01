@@ -1,0 +1,222 @@
+// Cypher Query Grammar for openGauss-graph
+//
+// This grammar defines the subset of Cypher supported by openGauss-graph.
+// Reference: openCypher specification and openGauss-graph implementation
+
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+COMMENT = _{ "/*" ~ (!"*/" ~ ANY)* ~ "*/" | "//" ~ (!"\n" ~ ANY)* }
+
+// ===== Top-level Query =====
+
+cypher_query = { SOI ~ query ~ ";"? ~ EOI }
+
+query = {
+    read_query
+  | write_query
+  | mixed_query
+}
+
+read_query = {
+    match_clause ~ where_clause? ~ return_clause
+}
+
+write_query = {
+    create_clause
+  | delete_clause
+  | set_clause
+}
+
+mixed_query = {
+    match_clause ~ where_clause? ~ (create_clause | delete_clause | set_clause)
+  | match_clause ~ where_clause? ~ set_clause ~ return_clause?
+}
+
+// ===== MATCH Clause =====
+
+match_clause = { ^"MATCH" ~ pattern ~ ("," ~ pattern)* }
+
+// ===== CREATE Clause =====
+
+create_clause = { ^"CREATE" ~ pattern ~ ("," ~ pattern)* }
+
+// ===== DELETE Clause =====
+
+delete_clause = { (^"DETACH" ~ ^"DELETE" | ^"DELETE") ~ expression ~ ("," ~ expression)* }
+
+// ===== SET Clause =====
+
+set_clause = { ^"SET" ~ set_item ~ ("," ~ set_item)* }
+
+set_item = { property_expression ~ "=" ~ expression }
+
+// ===== RETURN Clause =====
+
+return_clause = { ^"RETURN" ~ return_item ~ ("," ~ return_item)* ~ order_by? ~ limit? }
+
+return_item = { expression ~ (^"AS" ~ identifier)? }
+
+order_by = { ^"ORDER" ~ ^"BY" ~ sort_item ~ ("," ~ sort_item)* }
+
+sort_item = { expression ~ (^"ASC" | ^"DESC")? }
+
+limit = { ^"LIMIT" ~ integer }
+
+// ===== WHERE Clause =====
+
+where_clause = { ^"WHERE" ~ expression }
+
+// ===== Pattern =====
+
+pattern = { node_pattern ~ (edge_pattern ~ node_pattern)* }
+
+node_pattern = {
+    "(" ~ identifier? ~ (":" ~ label)? ~ properties? ~ ")"
+}
+
+edge_pattern = {
+    left_arrow ~ "[" ~ identifier? ~ (":" ~ label)? ~ properties? ~ "]" ~ right_arrow
+  | "-" ~ "[" ~ identifier? ~ (":" ~ label)? ~ properties? ~ "]" ~ right_arrow
+  | left_arrow ~ "[" ~ identifier? ~ (":" ~ label)? ~ properties? ~ "]" ~ "-"
+  | "-" ~ "[" ~ identifier? ~ (":" ~ label)? ~ properties? ~ "]" ~ "-"
+}
+
+left_arrow = @{ "<-" }
+right_arrow = @{ "->" }
+
+properties = { "{" ~ property ~ ("," ~ property)* ~ "}" }
+
+property = { property_key ~ ":" ~ expression }
+
+property_key = @{ identifier }
+
+// ===== Expressions =====
+
+expression = {
+    or_expression
+}
+
+or_expression = {
+    and_expression ~ (^"OR" ~ and_expression)*
+}
+
+and_expression = {
+    not_expression ~ (^"AND" ~ not_expression)*
+}
+
+not_expression = {
+    ^"NOT" ~ not_expression
+  | comparison_expression
+}
+
+comparison_expression = {
+    additive_expression ~ (comparison_op ~ additive_expression)?
+}
+
+comparison_op = {
+    "=" | "<>" | "!=" | "<" | ">" | "<=" | ">="
+}
+
+additive_expression = {
+    multiplicative_expression ~ (("+"|"-") ~ multiplicative_expression)*
+}
+
+multiplicative_expression = {
+    unary_expression ~ (("*"|"/"|"%") ~ unary_expression)*
+}
+
+unary_expression = {
+    ("+" | "-") ~ unary_expression
+  | postfix_expression
+}
+
+postfix_expression = {
+    primary_expression ~ (property_lookup | array_index)*
+}
+
+property_expression = {
+    identifier ~ property_lookup+
+}
+
+property_lookup = { "." ~ identifier }
+
+array_index = { "[" ~ expression ~ "]" }
+
+primary_expression = {
+    literal
+  | parameter
+  | function_call
+  | identifier
+  | "(" ~ expression ~ ")"
+}
+
+// ===== Literals =====
+
+literal = {
+    null
+  | boolean
+  | number
+  | string
+  | list_literal
+  | map_literal
+}
+
+null = @{ ^"NULL" }
+
+boolean = @{ ^"TRUE" | ^"FALSE" }
+
+number = @{
+    "-"? ~ (float | integer)
+}
+
+integer = @{
+    "0"
+  | ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*
+}
+
+float = @{
+    integer ~ ("." ~ ASCII_DIGIT+)? ~ (^"E" ~ ("+" | "-")? ~ ASCII_DIGIT+)?
+}
+
+string = @{
+    "\"" ~ string_inner ~ "\""
+  | "'" ~ string_inner ~ "'"
+}
+
+string_inner = @{ (!("\"" | "'") ~ ANY)* }
+
+list_literal = {
+    "[" ~ (expression ~ ("," ~ expression)*)? ~ "]"
+}
+
+map_literal = {
+    "{" ~ (map_entry ~ ("," ~ map_entry)*)? ~ "}"
+}
+
+map_entry = { property_key ~ ":" ~ expression }
+
+// ===== Functions =====
+
+function_call = {
+    function_name ~ "(" ~ (expression ~ ("," ~ expression)*)? ~ ")"
+}
+
+function_name = @{
+    ^"COUNT" | ^"SUM" | ^"AVG" | ^"MIN" | ^"MAX"
+  | ^"LENGTH" | ^"SIZE" | ^"TYPE" | ^"ID" | ^"LABELS"
+  | ^"NODES" | ^"RELATIONSHIPS" | ^"PROPERTIES"
+  | ^"STARTNODE" | ^"ENDNODE"
+  | ^"COALESCE" | ^"TOSTRING" | ^"TOINTEGER" | ^"TOFLOAT" | ^"TOBOOLEAN"
+  | identifier
+}
+
+// ===== Parameters =====
+
+parameter = { "$" ~ identifier }
+
+// ===== Identifiers and Labels =====
+
+identifier = @{
+    (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")*
+}
+
+label = @{ identifier }

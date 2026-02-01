@@ -1,0 +1,27 @@
+{
+  "workload_type": "Read",
+  "threads": 8,
+  "duration_secs": 10,
+  "total_operations": 23767942,
+  "successful_operations": 23767942,
+  "failed_operations": 0,
+  "throughput_ops_per_sec": 2376752.6265560817,
+  "latencies_ms": {
+    "min": 0.000625,
+    "max": 14.603625000000001,
+    "mean": 0.002614131730838561,
+    "p50": 0.002417,
+    "p95": 0.003584,
+    "p99": 0.004083
+  },
+  "per_thread_ops": [
+    2970992,
+    2970992,
+    2970992,
+    2970992,
+    2970992,
+    2970992,
+    2970992,
+    2970992
+  ]
+}

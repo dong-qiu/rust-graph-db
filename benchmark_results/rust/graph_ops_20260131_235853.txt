@@ -1,0 +1,110 @@
+warning: unused import: `std::io::Write`
+  --> src/tools/export.rs:12:5
+   |
+12 | use std::io::Write;
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `get_label_name` is never used
+   --> src/storage/rocksdb_store.rs:168:8
+    |
+ 40 | impl RocksDbStorage {
+    | ------------------- method in this implementation
+...
+168 |     fn get_label_name(&self, label_id: u16) -> StorageResult<String> {
+    |        ^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `id` is never read
+  --> src/tools/import.rs:76:5
+   |
+74 | struct CsvEdge {
+   |        ------- field in this struct
+75 |     #[serde(default)]
+76 |     id: Option<String>,
+   |     ^^
+   |
+   = note: `CsvEdge` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `id` is never read
+   --> src/tools/import.rs:102:5
+    |
+100 | struct JsonEdge {
+    |        -------- field in this struct
+101 |     #[serde(default)]
+102 |     id: Option<String>,
+    |     ^^
+    |
+    = note: `JsonEdge` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: `rust-graph-db` (lib) generated 4 warnings
+warning: unused `Result` that must be used
+   --> benches/graph_ops.rs:217:21
+    |
+217 |                     black_box(path);
+    |                     ^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+    = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+    |
+217 |                     let _ = black_box(path);
+    |                     +++++++
+
+warning: `rust-graph-db` (bench "graph_ops") generated 1 warning
+    Finished `bench` profile [optimized] target(s) in 0.24s
+     Running benches/graph_ops.rs (target/release/deps/graph_ops-0c4d798cf911812f)
+Gnuplot not found, using plotters backend
+Benchmarking create_vertices/batch_1000
+Benchmarking create_vertices/batch_1000: Warming up for 3.0000 s
+Benchmarking create_vertices/batch_1000: Collecting 100 samples in estimated 5.0089 s (1300 iterations)
+Benchmarking create_vertices/batch_1000: Analyzing
+create_vertices/batch_1000
+                        time:   [3.7842 ms 3.8218 ms 3.8702 ms]
+                        thrpt:  [258.39 Kelem/s 261.65 Kelem/s 264.25 Kelem/s]
+Found 7 outliers among 100 measurements (7.00%)
+  4 (4.00%) high mild
+  3 (3.00%) high severe
+
+Benchmarking scan_1000_vertices
+Benchmarking scan_1000_vertices: Warming up for 3.0000 s
+Benchmarking scan_1000_vertices: Collecting 100 samples in estimated 6.2123 s (20k iterations)
+Benchmarking scan_1000_vertices: Analyzing
+scan_1000_vertices      time:   [297.92 µs 300.67 µs 305.83 µs]
+Found 6 outliers among 100 measurements (6.00%)
+  2 (2.00%) low mild
+  1 (1.00%) high mild
+  3 (3.00%) high severe
+
+Benchmarking create_edges/batch_100
+Benchmarking create_edges/batch_100: Warming up for 3.0000 s
+Benchmarking create_edges/batch_100: Collecting 100 samples in estimated 8.1960 s (10k iterations)
+Benchmarking create_edges/batch_100: Analyzing
+create_edges/batch_100  time:   [774.93 µs 781.20 µs 789.22 µs]
+                        thrpt:  [126.71 Kelem/s 128.01 Kelem/s 129.04 Kelem/s]
+Found 5 outliers among 100 measurements (5.00%)
+  1 (1.00%) high mild
+  4 (4.00%) high severe
+
+Benchmarking get_outgoing_edges
+Benchmarking get_outgoing_edges: Warming up for 3.0000 s
+Benchmarking get_outgoing_edges: Collecting 100 samples in estimated 5.0052 s (3.2M iterations)
+Benchmarking get_outgoing_edges: Analyzing
+get_outgoing_edges      time:   [1.5081 µs 1.5159 µs 1.5258 µs]
+Found 3 outliers among 100 measurements (3.00%)
+  1 (1.00%) high mild
+  2 (2.00%) high severe
+
+Benchmarking shortest_path_10x10_grid
+Benchmarking shortest_path_10x10_grid: Warming up for 3.0000 s
+Benchmarking shortest_path_10x10_grid: Collecting 100 samples in estimated 5.0586 s (20k iterations)
+Benchmarking shortest_path_10x10_grid: Analyzing
+shortest_path_10x10_grid
+                        time:   [245.29 µs 247.56 µs 250.79 µs]
+Found 7 outliers among 100 measurements (7.00%)
+  1 (1.00%) low mild
+  2 (2.00%) high mild
+  4 (4.00%) high severe
+

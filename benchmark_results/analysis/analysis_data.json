@@ -1,0 +1,197 @@
+{
+  "timestamp": "2026-02-01T10:33:43.303789",
+  "criterion_benchmarks": {
+    "query_ops_20260131_235955.txt": [
+      {
+        "name": "vertex_scan/100",
+        "time_mid_us": 40.979,
+        "time_low_us": 40.809,
+        "time_high_us": 41.166
+      },
+      {
+        "name": "vertex_scan/1000",
+        "time_mid_us": 414.08,
+        "time_low_us": 412.51,
+        "time_high_us": 416.86
+      },
+      {
+        "name": "vertex_scan/10000",
+        "time_mid_us": 4302.2,
+        "time_low_us": 4163.0,
+        "time_high_us": 4443.1
+      },
+      {
+        "name": "point_query/100",
+        "time_mid_us": 1.4859,
+        "time_low_us": 1.2448,
+        "time_high_us": 1.714
+      },
+      {
+        "name": "point_query/1000",
+        "time_mid_us": 1.6889,
+        "time_low_us": 1.5024,
+        "time_high_us": 1.8934
+      },
+      {
+        "name": "point_query/10000",
+        "time_mid_us": 1.3089,
+        "time_low_us": 1.1699,
+        "time_high_us": 1.4279
+      },
+      {
+        "name": "edge_traversal/100",
+        "time_mid_us": 3.636,
+        "time_low_us": 3.2502,
+        "time_high_us": 3.9234
+      },
+      {
+        "name": "edge_traversal/1000",
+        "time_mid_us": 3.8341,
+        "time_low_us": 3.3402,
+        "time_high_us": 4.1756
+      },
+      {
+        "name": "edge_traversal/10000",
+        "time_mid_us": 4.2106,
+        "time_low_us": 3.8702,
+        "time_high_us": 4.4556
+      },
+      {
+        "name": "vle/depth/2",
+        "time_mid_us": 10.955,
+        "time_low_us": 10.309,
+        "time_high_us": 11.63
+      },
+      {
+        "name": "vle/depth/3",
+        "time_mid_us": 19.17,
+        "time_low_us": 16.384,
+        "time_high_us": 20.767
+      },
+      {
+        "name": "vle/depth/4",
+        "time_mid_us": 27.261,
+        "time_low_us": 24.237,
+        "time_high_us": 29.835
+      },
+      {
+        "name": "pattern_match_1hop/100",
+        "time_mid_us": 238.74,
+        "time_low_us": 225.16,
+        "time_high_us": 261.57
+      },
+      {
+        "name": "pattern_match_1hop/1000",
+        "time_mid_us": 2801.1,
+        "time_low_us": 2350.2999999999997,
+        "time_high_us": 3150.0
+      },
+      {
+        "name": "batch_create/10",
+        "time_mid_us": 2993.7999999999997,
+        "time_low_us": 2531.0,
+        "time_high_us": 3300.9
+      },
+      {
+        "name": "batch_create/100",
+        "time_mid_us": 3587.5,
+        "time_low_us": 3134.7,
+        "time_high_us": 4027.0
+      },
+      {
+        "name": "batch_create/1000",
+        "time_mid_us": 9937.8,
+        "time_low_us": 8082.3,
+        "time_high_us": 11342.0
+      },
+      {
+        "name": "batch_edge_create/10",
+        "time_mid_us": 138.75,
+        "time_low_us": 131.08,
+        "time_high_us": 145.05
+      },
+      {
+        "name": "batch_edge_create/100",
+        "time_mid_us": 1184.6000000000001,
+        "time_low_us": 1125.6999999999998,
+        "time_high_us": 1305.3
+      },
+      {
+        "name": "batch_edge_create/1000",
+        "time_mid_us": 13944.0,
+        "time_low_us": 11818.0,
+        "time_high_us": 15554.0
+      }
+    ],
+    "graph_ops_20260131_235853.txt": [
+      {
+        "name": "scan_1000_vertices",
+        "time_mid_us": 300.67,
+        "time_low_us": 297.92,
+        "time_high_us": 305.83
+      },
+      {
+        "name": "create_edges/batch_100",
+        "time_mid_us": 781.2,
+        "time_low_us": 774.93,
+        "time_high_us": 789.22
+      },
+      {
+        "name": "get_outgoing_edges",
+        "time_mid_us": 1.5159,
+        "time_low_us": 1.5081,
+        "time_high_us": 1.5258
+      }
+    ]
+  },
+  "concurrent_benchmarks": [
+    {
+      "workload": "Read",
+      "threads": 16,
+      "throughput": 2580273.702932119,
+      "latency_p50_ms": 0.002,
+      "latency_p99_ms": 0.003875,
+      "total_ops": 51605738
+    },
+    {
+      "workload": "Write",
+      "threads": 4,
+      "throughput": 239614.13052744506,
+      "latency_p50_ms": 0.011375,
+      "latency_p99_ms": 0.058417,
+      "total_ops": 2396157
+    },
+    {
+      "workload": "Mixed",
+      "threads": 4,
+      "throughput": 1080974.4918659695,
+      "latency_p50_ms": 0.002333,
+      "latency_p99_ms": 0.022708,
+      "total_ops": 10809830
+    },
+    {
+      "workload": "Read",
+      "threads": 1,
+      "throughput": 1001731.2297743872,
+      "latency_p50_ms": 0.000834,
+      "latency_p99_ms": 0.001458,
+      "total_ops": 10017357
+    },
+    {
+      "workload": "Read",
+      "threads": 8,
+      "throughput": 2376752.6265560817,
+      "latency_p50_ms": 0.002417,
+      "latency_p99_ms": 0.004083,
+      "total_ops": 23767942
+    },
+    {
+      "workload": "Read",
+      "threads": 4,
+      "throughput": 1955249.4658000183,
+      "latency_p50_ms": 0.0015409999999999998,
+      "latency_p99_ms": 0.003709,
+      "total_ops": 19552822
+    }
+  ]
+}

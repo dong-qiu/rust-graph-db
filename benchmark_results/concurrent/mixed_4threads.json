@@ -1,0 +1,23 @@
+{
+  "workload_type": "Mixed",
+  "threads": 4,
+  "duration_secs": 10,
+  "total_operations": 10809830,
+  "successful_operations": 10809830,
+  "failed_operations": 0,
+  "throughput_ops_per_sec": 1080974.4918659695,
+  "latencies_ms": {
+    "min": 0.000625,
+    "max": 7.0475829999999995,
+    "mean": 0.0034332110649137543,
+    "p50": 0.002333,
+    "p95": 0.010042,
+    "p99": 0.022708
+  },
+  "per_thread_ops": [
+    2702457,
+    2702457,
+    2702457,
+    2702457
+  ]
+}

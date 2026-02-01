@@ -1,0 +1,217 @@
+warning: unused import: `std::io::Write`
+  --> src/tools/export.rs:12:5
+   |
+12 | use std::io::Write;
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `get_label_name` is never used
+   --> src/storage/rocksdb_store.rs:168:8
+    |
+ 40 | impl RocksDbStorage {
+    | ------------------- method in this implementation
+...
+168 |     fn get_label_name(&self, label_id: u16) -> StorageResult<String> {
+    |        ^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `id` is never read
+  --> src/tools/import.rs:76:5
+   |
+74 | struct CsvEdge {
+   |        ------- field in this struct
+75 |     #[serde(default)]
+76 |     id: Option<String>,
+   |     ^^
+   |
+   = note: `CsvEdge` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `id` is never read
+   --> src/tools/import.rs:102:5
+    |
+100 | struct JsonEdge {
+    |        -------- field in this struct
+101 |     #[serde(default)]
+102 |     id: Option<String>,
+    |     ^^
+    |
+    = note: `JsonEdge` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: `rust-graph-db` (lib) generated 4 warnings
+warning: unused `Result` that must be used
+   --> benches/query_ops.rs:229:29
+    |
+229 | ...                   black_box(path);
+    |                       ^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+    = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+    |
+229 |                             let _ = black_box(path);
+    |                             +++++++
+
+warning: unused `Result` that must be used
+   --> benches/query_ops.rs:272:29
+    |
+272 | ...                   black_box(paths);
+    |                       ^^^^^^^^^^^^^^^^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+help: use `let _ = ...` to ignore the resulting value
+    |
+272 |                             let _ = black_box(paths);
+    |                             +++++++
+
+warning: `rust-graph-db` (bench "query_ops") generated 2 warnings
+    Finished `bench` profile [optimized] target(s) in 0.11s
+     Running benches/query_ops.rs (target/release/deps/query_ops-abd6aa2d660bc1cf)
+Gnuplot not found, using plotters backend
+Benchmarking vertex_scan/100
+Benchmarking vertex_scan/100: Warming up for 3.0000 s
+Benchmarking vertex_scan/100: Collecting 10 samples in estimated 10.002 s (243k iterations)
+Benchmarking vertex_scan/100: Analyzing
+vertex_scan/100         time:   [40.809 µs 40.979 µs 41.166 µs]
+                        thrpt:  [2.4292 Melem/s 2.4403 Melem/s 2.4505 Melem/s]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe
+Benchmarking vertex_scan/1000
+Benchmarking vertex_scan/1000: Warming up for 3.0000 s
+Benchmarking vertex_scan/1000: Collecting 10 samples in estimated 10.023 s (24k iterations)
+Benchmarking vertex_scan/1000: Analyzing
+vertex_scan/1000        time:   [412.51 µs 414.08 µs 416.86 µs]
+                        thrpt:  [2.3989 Melem/s 2.4150 Melem/s 2.4242 Melem/s]
+Found 2 outliers among 10 measurements (20.00%)
+  1 (10.00%) high mild
+  1 (10.00%) high severe
+Benchmarking vertex_scan/10000
+Benchmarking vertex_scan/10000: Warming up for 3.0000 s
+Benchmarking vertex_scan/10000: Collecting 10 samples in estimated 10.135 s (2420 iterations)
+Benchmarking vertex_scan/10000: Analyzing
+vertex_scan/10000       time:   [4.1630 ms 4.3022 ms 4.4431 ms]
+                        thrpt:  [2.2507 Melem/s 2.3244 Melem/s 2.4021 Melem/s]
+
+Benchmarking point_query/100
+Benchmarking point_query/100: Warming up for 3.0000 s
+Benchmarking point_query/100: Collecting 10 samples in estimated 10.000 s (13M iterations)
+Benchmarking point_query/100: Analyzing
+point_query/100         time:   [1.2448 µs 1.4859 µs 1.7140 µs]
+Benchmarking point_query/1000
+Benchmarking point_query/1000: Warming up for 3.0000 s
+Benchmarking point_query/1000: Collecting 10 samples in estimated 10.000 s (9.2M iterations)
+Benchmarking point_query/1000: Analyzing
+point_query/1000        time:   [1.5024 µs 1.6889 µs 1.8934 µs]
+Found 3 outliers among 10 measurements (30.00%)
+  1 (10.00%) low mild
+  1 (10.00%) high mild
+  1 (10.00%) high severe
+Benchmarking point_query/10000
+Benchmarking point_query/10000: Warming up for 3.0000 s
+Benchmarking point_query/10000: Collecting 10 samples in estimated 10.000 s (8.8M iterations)
+Benchmarking point_query/10000: Analyzing
+point_query/10000       time:   [1.1699 µs 1.3089 µs 1.4279 µs]
+
+Benchmarking edge_traversal/100
+Benchmarking edge_traversal/100: Warming up for 3.0000 s
+Benchmarking edge_traversal/100: Collecting 10 samples in estimated 10.000 s (3.2M iterations)
+Benchmarking edge_traversal/100: Analyzing
+edge_traversal/100      time:   [3.2502 µs 3.6360 µs 3.9234 µs]
+Benchmarking edge_traversal/1000
+Benchmarking edge_traversal/1000: Warming up for 3.0000 s
+Benchmarking edge_traversal/1000: Collecting 10 samples in estimated 10.000 s (2.6M iterations)
+Benchmarking edge_traversal/1000: Analyzing
+edge_traversal/1000     time:   [3.3402 µs 3.8341 µs 4.1756 µs]
+Benchmarking edge_traversal/10000
+Benchmarking edge_traversal/10000: Warming up for 3.0000 s
+Benchmarking edge_traversal/10000: Collecting 10 samples in estimated 10.000 s (2.3M iterations)
+Benchmarking edge_traversal/10000: Analyzing
+edge_traversal/10000    time:   [3.8702 µs 4.2106 µs 4.4556 µs]
+
+Benchmarking shortest_path/grid/10x10
+Benchmarking shortest_path/grid/10x10: Warming up for 3.0000 s
+Benchmarking shortest_path/grid/10x10: Collecting 10 samples in estimated 10.010 s (26k iterations)
+Benchmarking shortest_path/grid/10x10: Analyzing
+shortest_path/grid/10x10
+                        time:   [347.76 µs 406.93 µs 457.49 µs]
+Benchmarking shortest_path/grid/20x20
+Benchmarking shortest_path/grid/20x20: Warming up for 3.0000 s
+Benchmarking shortest_path/grid/20x20: Collecting 10 samples in estimated 10.065 s (6215 iterations)
+Benchmarking shortest_path/grid/20x20: Analyzing
+shortest_path/grid/20x20
+                        time:   [1.5458 ms 1.7515 ms 1.9347 ms]
+Benchmarking shortest_path/grid/50x50
+Benchmarking shortest_path/grid/50x50: Warming up for 3.0000 s
+Benchmarking shortest_path/grid/50x50: Collecting 10 samples in estimated 10.320 s (825 iterations)
+Benchmarking shortest_path/grid/50x50: Analyzing
+shortest_path/grid/50x50
+                        time:   [11.005 ms 11.789 ms 12.378 ms]
+
+Benchmarking vle/depth/2
+Benchmarking vle/depth/2: Warming up for 3.0000 s
+Benchmarking vle/depth/2: Collecting 10 samples in estimated 10.000 s (577k iterations)
+Benchmarking vle/depth/2: Analyzing
+vle/depth/2             time:   [10.309 µs 10.955 µs 11.630 µs]
+Benchmarking vle/depth/3
+Benchmarking vle/depth/3: Warming up for 3.0000 s
+Benchmarking vle/depth/3: Collecting 10 samples in estimated 10.001 s (400k iterations)
+Benchmarking vle/depth/3: Analyzing
+vle/depth/3             time:   [16.384 µs 19.170 µs 20.767 µs]
+Benchmarking vle/depth/4
+Benchmarking vle/depth/4: Warming up for 3.0000 s
+Benchmarking vle/depth/4: Collecting 10 samples in estimated 10.001 s (396k iterations)
+Benchmarking vle/depth/4: Analyzing
+vle/depth/4             time:   [24.237 µs 27.261 µs 29.835 µs]
+
+Benchmarking pattern_match_1hop/100
+Benchmarking pattern_match_1hop/100: Warming up for 3.0000 s
+Benchmarking pattern_match_1hop/100: Collecting 10 samples in estimated 10.000 s (44k iterations)
+Benchmarking pattern_match_1hop/100: Analyzing
+pattern_match_1hop/100  time:   [225.16 µs 238.74 µs 261.57 µs]
+Benchmarking pattern_match_1hop/1000
+Benchmarking pattern_match_1hop/1000: Warming up for 3.0000 s
+Benchmarking pattern_match_1hop/1000: Collecting 10 samples in estimated 10.080 s (3025 iterations)
+Benchmarking pattern_match_1hop/1000: Analyzing
+pattern_match_1hop/1000 time:   [2.3503 ms 2.8011 ms 3.1500 ms]
+
+Benchmarking batch_create/10
+Benchmarking batch_create/10: Warming up for 3.0000 s
+Benchmarking batch_create/10: Collecting 10 samples in estimated 10.103 s (3410 iterations)
+Benchmarking batch_create/10: Analyzing
+batch_create/10         time:   [2.5310 ms 2.9938 ms 3.3009 ms]
+                        thrpt:  [3.0295 Kelem/s 3.3402 Kelem/s 3.9510 Kelem/s]
+Benchmarking batch_create/100
+Benchmarking batch_create/100: Warming up for 3.0000 s
+Benchmarking batch_create/100: Collecting 10 samples in estimated 10.064 s (3190 iterations)
+Benchmarking batch_create/100: Analyzing
+batch_create/100        time:   [3.1347 ms 3.5875 ms 4.0270 ms]
+                        thrpt:  [24.833 Kelem/s 27.874 Kelem/s 31.901 Kelem/s]
+Benchmarking batch_create/1000
+Benchmarking batch_create/1000: Warming up for 3.0000 s
+Benchmarking batch_create/1000: Collecting 10 samples in estimated 10.228 s (1155 iterations)
+Benchmarking batch_create/1000: Analyzing
+batch_create/1000       time:   [8.0823 ms 9.9378 ms 11.342 ms]
+                        thrpt:  [88.170 Kelem/s 100.63 Kelem/s 123.73 Kelem/s]
+
+Benchmarking batch_edge_create/10
+Benchmarking batch_edge_create/10: Warming up for 3.0000 s
+Benchmarking batch_edge_create/10: Collecting 10 samples in estimated 10.000 s (64k iterations)
+Benchmarking batch_edge_create/10: Analyzing
+batch_edge_create/10    time:   [131.08 µs 138.75 µs 145.05 µs]
+                        thrpt:  [68.944 Kelem/s 72.074 Kelem/s 76.287 Kelem/s]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low mild
+Benchmarking batch_edge_create/100
+Benchmarking batch_edge_create/100: Warming up for 3.0000 s
+Benchmarking batch_edge_create/100: Collecting 10 samples in estimated 10.002 s (7810 iterations)
+Benchmarking batch_edge_create/100: Analyzing
+batch_edge_create/100   time:   [1.1257 ms 1.1846 ms 1.3053 ms]
+                        thrpt:  [76.609 Kelem/s 84.416 Kelem/s 88.833 Kelem/s]
+Benchmarking batch_edge_create/1000
+Benchmarking batch_edge_create/1000: Warming up for 3.0000 s
+Benchmarking batch_edge_create/1000: Collecting 10 samples in estimated 10.264 s (660 iterations)
+Benchmarking batch_edge_create/1000: Analyzing
+batch_edge_create/1000  time:   [11.818 ms 13.944 ms 15.554 ms]
+                        thrpt:  [64.293 Kelem/s 71.717 Kelem/s 84.615 Kelem/s]
+
