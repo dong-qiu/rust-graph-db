@@ -1,8 +1,8 @@
 # 开发日志 (Development Log)
 
 **项目**: Rust Graph Database - openGauss-graph Rust 实现
-**开发周期**: 2026-01-30 - 2026-02-03 (Phase 1-10)
-**开发者**: Claude Sonnet 4.5 (Phase 1-6) + Claude Opus 4.5 (Phase 7-8)
+**开发周期**: 2026-01-30 - 2026-02-03 (Phase 1-12)
+**开发者**: Claude Sonnet 4.5 (Phase 1-6) + Claude Opus 4.5 (Phase 7-12)
 
 ---
 
@@ -19,6 +19,8 @@
 - [Phase 8: WHERE 子句实现](#phase-8-where-子句实现)
 - [Phase 9: Rust 惯用性重构](#phase-9-rust-惯用性重构)
 - [Phase 10: 性能优化](#phase-10-性能优化)
+- [Phase 11: ORDER BY + LIMIT 实现](#phase-11-order-by--limit-实现)
+- [Phase 12: 聚合函数实现](#phase-12-聚合函数实现)
 - [总体项目状态](#总体项目状态)
 - [问题与解决方案](#问题与解决方案)
 - [关键决策](#关键决策)
@@ -5170,6 +5172,98 @@ batch_edge_create/1000  thrpt:  [120.52 Kelem/s 123.18 Kelem/s 125.10 Kelem/s]  
 
 ---
 
+## Phase 11: ORDER BY + LIMIT 实现
+
+**开始时间**: 2026-02-03
+**完成时间**: 2026-02-03
+**开发者**: Claude Opus 4.5
+
+### 11.1 任务背景
+
+实现 Cypher 查询的 ORDER BY 和 LIMIT 子句执行功能。解析器已支持这两个子句，但执行器尚未实现。
+
+### 11.2 实现内容
+
+#### 修改文件: `src/executor/mod.rs`
+
+| 函数 | 说明 |
+|------|------|
+| `apply_return()` | 增加 ORDER BY 和 LIMIT 处理步骤 |
+| `apply_order_by()` | 新增：对结果行进行排序 |
+| `evaluate_sort_expression()` | 新增：计算排序表达式的值 |
+| `compare_values()` | 新增：比较两个 Value 用于排序 |
+| `literal_to_value()` | 新增：转换字面量到 Value |
+
+#### 功能特性
+
+1. **ORDER BY 支持**
+   - 升序 (ASC) 和降序 (DESC) 排序
+   - 多列排序 (多个 SortItem)
+   - 支持 Integer, Float, String, Boolean 类型排序
+   - NULL 值始终排在最后
+
+2. **LIMIT 支持**
+   - 限制返回结果数量
+   - 在 ORDER BY 之后应用
+
+#### 使用示例
+
+```cypher
+-- 按年龄降序，取前 10 条
+MATCH (p:Person) RETURN p.name, p.age ORDER BY p.age DESC LIMIT 10
+
+-- 多列排序
+MATCH (p:Person) RETURN p ORDER BY p.city ASC, p.age DESC
+
+-- 仅限制数量
+MATCH (n:Node) RETURN n LIMIT 100
+```
+
+### 11.3 新增测试
+
+| 测试 | 说明 |
+|------|------|
+| `test_order_by_integer_asc` | 整数升序排序 |
+| `test_order_by_integer_desc` | 整数降序排序 |
+| `test_order_by_string` | 字符串排序 |
+| `test_order_by_with_nulls` | NULL 值处理 |
+| `test_order_by_multiple_columns` | 多列排序 |
+| `test_limit` | LIMIT 限制 |
+| `test_order_by_and_limit` | ORDER BY + LIMIT 组合 |
+
+### 11.4 测试验证
+
+```
+running 23 tests (executor module)
+test executor::tests::test_order_by_integer_asc ... ok
+test executor::tests::test_order_by_integer_desc ... ok
+test executor::tests::test_order_by_string ... ok
+test executor::tests::test_order_by_with_nulls ... ok
+test executor::tests::test_order_by_multiple_columns ... ok
+test executor::tests::test_limit ... ok
+test executor::tests::test_order_by_and_limit ... ok
+...
+test result: ok. 23 passed; 0 failed
+```
+
+### 11.5 代码变更统计
+
+| 文件 | 新增行数 | 说明 |
+|------|----------|------|
+| `src/executor/mod.rs` | +180 | ORDER BY/LIMIT 实现 + 测试 |
+
+### 11.6 Phase 11 完成状态
+
+| 任务 | 状态 |
+|------|------|
+| ORDER BY ASC/DESC | ✅ 完成 |
+| 多列排序 | ✅ 完成 |
+| NULL 值处理 | ✅ 完成 |
+| LIMIT 执行 | ✅ 完成 |
+| 单元测试 | ✅ 完成 (7 个新测试) |
+
+---
+
 ## Phase 12: 聚合函数实现
 
 **开始时间**: 2026-02-03
@@ -5294,98 +5388,6 @@ test result: ok. 37 passed; 0 failed
 | MAX | ✅ 完成 |
 | NULL 处理 | ✅ 完成 |
 | 单元测试 | ✅ 完成 (14 个新测试) |
-
----
-
-## Phase 11: ORDER BY + LIMIT 实现
-
-**开始时间**: 2026-02-03
-**完成时间**: 2026-02-03
-**开发者**: Claude Opus 4.5
-
-### 11.1 任务背景
-
-实现 Cypher 查询的 ORDER BY 和 LIMIT 子句执行功能。解析器已支持这两个子句，但执行器尚未实现。
-
-### 11.2 实现内容
-
-#### 修改文件: `src/executor/mod.rs`
-
-| 函数 | 说明 |
-|------|------|
-| `apply_return()` | 增加 ORDER BY 和 LIMIT 处理步骤 |
-| `apply_order_by()` | 新增：对结果行进行排序 |
-| `evaluate_sort_expression()` | 新增：计算排序表达式的值 |
-| `compare_values()` | 新增：比较两个 Value 用于排序 |
-| `literal_to_value()` | 新增：转换字面量到 Value |
-
-#### 功能特性
-
-1. **ORDER BY 支持**
-   - 升序 (ASC) 和降序 (DESC) 排序
-   - 多列排序 (多个 SortItem)
-   - 支持 Integer, Float, String, Boolean 类型排序
-   - NULL 值始终排在最后
-
-2. **LIMIT 支持**
-   - 限制返回结果数量
-   - 在 ORDER BY 之后应用
-
-#### 使用示例
-
-```cypher
--- 按年龄降序，取前 10 条
-MATCH (p:Person) RETURN p.name, p.age ORDER BY p.age DESC LIMIT 10
-
--- 多列排序
-MATCH (p:Person) RETURN p ORDER BY p.city ASC, p.age DESC
-
--- 仅限制数量
-MATCH (n:Node) RETURN n LIMIT 100
-```
-
-### 11.3 新增测试
-
-| 测试 | 说明 |
-|------|------|
-| `test_order_by_integer_asc` | 整数升序排序 |
-| `test_order_by_integer_desc` | 整数降序排序 |
-| `test_order_by_string` | 字符串排序 |
-| `test_order_by_with_nulls` | NULL 值处理 |
-| `test_order_by_multiple_columns` | 多列排序 |
-| `test_limit` | LIMIT 限制 |
-| `test_order_by_and_limit` | ORDER BY + LIMIT 组合 |
-
-### 11.4 测试验证
-
-```
-running 23 tests (executor module)
-test executor::tests::test_order_by_integer_asc ... ok
-test executor::tests::test_order_by_integer_desc ... ok
-test executor::tests::test_order_by_string ... ok
-test executor::tests::test_order_by_with_nulls ... ok
-test executor::tests::test_order_by_multiple_columns ... ok
-test executor::tests::test_limit ... ok
-test executor::tests::test_order_by_and_limit ... ok
-...
-test result: ok. 23 passed; 0 failed
-```
-
-### 11.5 代码变更统计
-
-| 文件 | 新增行数 | 说明 |
-|------|----------|------|
-| `src/executor/mod.rs` | +180 | ORDER BY/LIMIT 实现 + 测试 |
-
-### 11.6 Phase 11 完成状态
-
-| 任务 | 状态 |
-|------|------|
-| ORDER BY ASC/DESC | ✅ 完成 |
-| 多列排序 | ✅ 完成 |
-| NULL 值处理 | ✅ 完成 |
-| LIMIT 执行 | ✅ 完成 |
-| 单元测试 | ✅ 完成 (7 个新测试) |
 
 ---
 
