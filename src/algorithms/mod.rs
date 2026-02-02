@@ -2,9 +2,14 @@
 ///
 /// This module implements common graph algorithms for Cypher queries.
 
+pub mod parallel;
 pub mod shortest_path;
 pub mod vle;
 
+pub use parallel::{
+    parallel_batch_process, parallel_filter_edges, parallel_filter_vertices, parallel_map_vertices,
+    parallel_match_property,
+};
 pub use shortest_path::{dijkstra, shortest_path, ShortestPathResult};
 pub use vle::{variable_length_expand, VariableLengthPath, VleOptions};
 

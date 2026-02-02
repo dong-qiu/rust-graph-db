@@ -38,11 +38,14 @@ csv = "1.3"
 clap = { version = "4.4", features = ["derive"] }
 rand = "0.8"
 parking_lot = "0.12"
+num_cpus = "1.16"
+
+# Parallel processing
+rayon = "1.10"
 
 # Phase 6+: To be enabled later
 # datafusion = "52.1"
 # arrow = "57.2"
-# rayon = "1.11"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

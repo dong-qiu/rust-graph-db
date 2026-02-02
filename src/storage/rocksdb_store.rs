@@ -13,11 +13,56 @@ use super::transaction::RocksDbTransaction;
 use super::{GraphStorage, GraphTransaction};
 use crate::types::{Edge, Graphid, Vertex};
 use async_trait::async_trait;
-use rocksdb::{Options, DB};
+use rocksdb::{BlockBasedOptions, Cache, Options, DB};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+
+/// Default block cache size (128 MB)
+const DEFAULT_BLOCK_CACHE_SIZE: usize = 128 * 1024 * 1024;
+
+/// Default write buffer size (64 MB)
+const DEFAULT_WRITE_BUFFER_SIZE: usize = 64 * 1024 * 1024;
+
+/// Bloom filter bits per key (10 bits = ~1% false positive rate)
+const BLOOM_FILTER_BITS_PER_KEY: i32 = 10;
+
+/// Storage configuration options
+#[derive(Debug, Clone)]
+pub struct StorageOptions {
+    /// Block cache size in bytes (default: 128 MB)
+    pub block_cache_size: usize,
+    /// Write buffer size in bytes (default: 64 MB)
+    pub write_buffer_size: usize,
+}
+
+impl Default for StorageOptions {
+    fn default() -> Self {
+        Self {
+            block_cache_size: DEFAULT_BLOCK_CACHE_SIZE,
+            write_buffer_size: DEFAULT_WRITE_BUFFER_SIZE,
+        }
+    }
+}
+
+impl StorageOptions {
+    /// Create options optimized for read-heavy workloads
+    pub fn read_optimized() -> Self {
+        Self {
+            block_cache_size: 256 * 1024 * 1024, // 256 MB cache
+            write_buffer_size: 32 * 1024 * 1024,  // 32 MB write buffer
+        }
+    }
+
+    /// Create options optimized for write-heavy workloads
+    pub fn write_optimized() -> Self {
+        Self {
+            block_cache_size: 64 * 1024 * 1024,   // 64 MB cache
+            write_buffer_size: 128 * 1024 * 1024, // 128 MB write buffer
+        }
+    }
+}
 
 /// RocksDB-backed graph storage
 pub struct RocksDbStorage {
@@ -44,9 +89,49 @@ impl RocksDbStorage {
     /// * `path` - Path to the database directory
     /// * `graph_name` - Name of the graph (namespace)
     pub fn new<P: AsRef<Path>>(path: P, graph_name: impl Into<String>) -> StorageResult<Self> {
+        Self::with_options(path, graph_name, StorageOptions::default())
+    }
+
+    /// Create a new RocksDB storage instance with custom options
+    pub fn with_options<P: AsRef<Path>>(
+        path: P,
+        graph_name: impl Into<String>,
+        storage_opts: StorageOptions,
+    ) -> StorageResult<Self> {
+        // Configure block-based table options with Bloom filter
+        let mut block_opts = BlockBasedOptions::default();
+        block_opts.set_bloom_filter(BLOOM_FILTER_BITS_PER_KEY as f64, false);
+
+        // Set up block cache for read performance
+        let cache = Cache::new_lru_cache(storage_opts.block_cache_size);
+        block_opts.set_block_cache(&cache);
+        block_opts.set_cache_index_and_filter_blocks(true);
+        block_opts.set_pin_l0_filter_and_index_blocks_in_cache(true);
+
+        // Configure RocksDB options
         let mut opts = Options::default();
         opts.create_if_missing(true);
         opts.create_missing_column_families(true);
+        opts.set_block_based_table_factory(&block_opts);
+
+        // Write performance
+        opts.set_write_buffer_size(storage_opts.write_buffer_size);
+        opts.set_max_write_buffer_number(3);
+        opts.set_min_write_buffer_number_to_merge(1);
+
+        // Compression (LZ4 for good balance of speed and compression)
+        opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
+
+        // Parallelism
+        opts.increase_parallelism(num_cpus::get() as i32);
+        opts.set_max_background_jobs(4);
+
+        // Optimize for point lookups
+        opts.set_memtable_prefix_bloom_ratio(0.1);
+
+        // Level compaction
+        opts.set_level_compaction_dynamic_level_bytes(true);
+        opts.set_max_bytes_for_level_base(256 * 1024 * 1024);
 
         let db = DB::open(&opts, path)?;
 
@@ -276,6 +361,136 @@ impl RocksDbStorage {
     /// Deserialize edge from JSON bytes
     fn deserialize_edge(&self, bytes: &[u8]) -> StorageResult<Edge> {
         Ok(serde_json::from_slice(bytes)?)
+    }
+
+    /// Bulk import vertices with optimized batch writes
+    ///
+    /// This method is optimized for large imports by:
+    /// - Pre-allocating WriteBatch capacity
+    /// - Batching counter updates
+    /// - Using a single atomic write
+    ///
+    /// # Arguments
+    /// * `label` - The vertex label
+    /// * `properties_list` - List of property maps for each vertex
+    ///
+    /// # Returns
+    /// * Vector of created vertices
+    pub fn bulk_import_vertices(
+        &self,
+        label: &str,
+        properties_list: Vec<JsonValue>,
+    ) -> StorageResult<Vec<Vertex>> {
+        if properties_list.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let label_id = self.get_or_create_label(label)?;
+        let count = properties_list.len() as u64;
+
+        // Get starting local ID
+        let counter_key = self.make_counter_key(label);
+        let start_locid = self
+            .db
+            .get(counter_key.as_bytes())?
+            .map(|bytes| {
+                let arr: [u8; 8] = bytes.as_slice().try_into().unwrap_or([0u8; 8]);
+                u64::from_le_bytes(arr)
+            })
+            .unwrap_or(0);
+
+        // Create batch with pre-allocated capacity
+        let mut batch = rocksdb::WriteBatch::default();
+        let mut vertices = Vec::with_capacity(properties_list.len());
+
+        for (i, properties) in properties_list.into_iter().enumerate() {
+            let locid = start_locid + i as u64;
+            let id = Graphid::new(label_id, locid)
+                .map_err(|e| StorageError::InvalidState(e.to_string()))?;
+
+            let vertex = Vertex::new(id, label, properties);
+            let key = self.make_vertex_key(label_id, locid);
+            let value = self.serialize_vertex(&vertex)?;
+
+            batch.put(key.as_bytes(), &value);
+            vertices.push(vertex);
+        }
+
+        // Update counter
+        let new_counter = start_locid + count;
+        batch.put(counter_key.as_bytes(), &new_counter.to_le_bytes());
+
+        // Atomic write
+        self.db.write(batch)?;
+
+        Ok(vertices)
+    }
+
+    /// Bulk import edges with optimized batch writes
+    ///
+    /// # Arguments
+    /// * `label` - The edge label
+    /// * `edges_data` - List of (start_id, end_id, properties) tuples
+    ///
+    /// # Returns
+    /// * Vector of created edges
+    pub fn bulk_import_edges(
+        &self,
+        label: &str,
+        edges_data: Vec<(Graphid, Graphid, JsonValue)>,
+    ) -> StorageResult<Vec<Edge>> {
+        if edges_data.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let label_id = self.get_or_create_label(label)?;
+        let count = edges_data.len() as u64;
+
+        // Get starting local ID
+        let counter_key = self.make_counter_key(label);
+        let start_locid = self
+            .db
+            .get(counter_key.as_bytes())?
+            .map(|bytes| {
+                let arr: [u8; 8] = bytes.as_slice().try_into().unwrap_or([0u8; 8]);
+                u64::from_le_bytes(arr)
+            })
+            .unwrap_or(0);
+
+        // Create batch
+        let mut batch = rocksdb::WriteBatch::default();
+        let mut edges = Vec::with_capacity(edges_data.len());
+
+        for (i, (start, end, properties)) in edges_data.into_iter().enumerate() {
+            let locid = start_locid + i as u64;
+            let id = Graphid::new(label_id, locid)
+                .map_err(|e| StorageError::InvalidState(e.to_string()))?;
+
+            let edge = Edge::new(id, start, end, label, properties);
+
+            // Edge data
+            let key = self.make_edge_key(label_id, locid);
+            let value = self.serialize_edge(&edge)?;
+            batch.put(key.as_bytes(), &value);
+
+            // Indices
+            let out_key = self.make_outgoing_key(start, id);
+            batch.put(out_key.as_bytes(), b"");
+
+            let in_key = self.make_incoming_key(end, id);
+            batch.put(in_key.as_bytes(), b"");
+
+            edges.push(edge);
+        }
+
+        // Update counter
+        let new_counter = start_locid + count;
+        batch.put(counter_key.as_bytes(), &new_counter.to_le_bytes());
+
+        // Atomic write
+        self.db.write(batch)?;
+
+        Ok(edges)
     }
 }
 

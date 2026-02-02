@@ -12,6 +12,7 @@ pub mod transaction;
 use crate::types::{Edge, Graphid, Vertex};
 use async_trait::async_trait;
 pub use error::{StorageError, StorageResult};
+pub use rocksdb_store::StorageOptions;
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
 
