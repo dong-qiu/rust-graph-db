@@ -5068,6 +5068,106 @@ Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
 | 批量导入 | 100K/s | ~300K/s | 3x |
 | 重复读取 (缓存命中) | ~1.3 µs | ~0.3 µs | 4x |
 
+### 10.11 Benchmark 验证结果 (2026-02-03)
+
+执行 `cargo bench` 验证性能优化效果，以下为实测结果：
+
+#### 显著性能提升的操作
+
+| 操作 | 数据规模 | 耗时变化 | 吞吐量变化 | 说明 |
+|------|----------|----------|------------|------|
+| **point_query** | 100 | **-36.1%** | - | Block Cache 命中 |
+| **point_query** | 1,000 | **-47.4%** | - | Block Cache 命中 |
+| **point_query** | 10,000 | **-37.6%** | - | Block Cache 命中 |
+| **edge_traversal** | 100 | **-35.0%** | - | Bloom Filter + Cache |
+| **edge_traversal** | 1,000 | **-35.9%** | - | Bloom Filter + Cache |
+| **edge_traversal** | 10,000 | **-30.5%** | - | Bloom Filter + Cache |
+| **shortest_path** | 10x10 网格 | **-36.6%** | - | 算法 + 存储优化 |
+| **shortest_path** | 20x20 网格 | **-34.7%** | - | 算法 + 存储优化 |
+| **shortest_path** | 50x50 网格 | **-29.3%** | - | 算法 + 存储优化 |
+| **vle (可变长路径)** | depth=2 | **-26.7%** | - | 遍历优化 |
+| **vle (可变长路径)** | depth=3 | **-28.6%** | - | 遍历优化 |
+| **vle (可变长路径)** | depth=4 | **-32.1%** | - | 遍历优化 |
+| **pattern_match** | 100 | **-35.1%** | - | 综合优化 |
+| **pattern_match** | 1,000 | **-32.6%** | - | 综合优化 |
+
+#### 批量操作性能提升 (WriteBatch 优化)
+
+| 操作 | 批量大小 | 耗时变化 | 吞吐量提升 |
+|------|----------|----------|------------|
+| **batch_create** | 10 | -31.2% | **+45.4%** |
+| **batch_create** | 100 | -37.8% | **+60.7%** |
+| **batch_create** | 1,000 | -41.6% | **+71.1%** |
+| **batch_edge_create** | 10 | -45.2% | **+82.6%** |
+| **batch_edge_create** | 100 | -42.9% | **+75.2%** |
+| **batch_edge_create** | 1,000 | -37.8% | **+60.9%** |
+
+#### 基础操作性能 (稳定)
+
+| 操作 | 数据规模 | 耗时 | 吞吐量 | 状态 |
+|------|----------|------|--------|------|
+| create_vertices | 1,000 | 3.9 ms | 256 K/s | 无变化 |
+| scan_1000_vertices | 1,000 | 302 µs | - | 无变化 |
+| create_edges | 100 | 792 µs | 126 K/s | 无变化 |
+| get_outgoing_edges | - | 1.5 µs | - | 无变化 |
+
+#### 性能分析总结
+
+1. **点查询 (Point Query)**: 性能提升 **36-47%**
+   - 主要归功于 128 MB Block Cache
+   - 热数据缓存在内存，避免磁盘 I/O
+
+2. **边遍历 (Edge Traversal)**: 性能提升 **30-36%**
+   - Bloom Filter 减少不存在 key 的查找
+   - Block Cache 加速索引查询
+
+3. **图算法 (Shortest Path, VLE)**: 性能提升 **27-37%**
+   - 存储层优化传导到算法层
+   - 多次遍历中 Cache 命中率高
+
+4. **批量写入**: 吞吐量提升 **45-83%**
+   - WriteBatch 合并多次写操作
+   - 减少 RocksDB WAL 同步次数
+   - 预分配容量减少内存分配
+
+5. **扫描操作**: 基本无变化 (~2-3%)
+   - 扫描操作 I/O bound，优化效果有限
+   - 轻微波动在测量误差范围内
+
+#### 原始 Benchmark 数据
+
+```
+# Point Query (Block Cache 效果显著)
+point_query/100         time:   [732.99 ns 782.34 ns 851.39 ns]  change: -36.125%
+point_query/1000        time:   [794.83 ns 896.81 ns 994.43 ns]  change: -47.439%
+point_query/10000       time:   [786.85 ns 826.41 ns 867.65 ns]  change: -37.595%
+
+# Edge Traversal (Bloom Filter + Cache)
+edge_traversal/100      time:   [2.2377 µs 2.3777 µs 2.5211 µs]  change: -34.999%
+edge_traversal/1000     time:   [2.4650 µs 2.5672 µs 2.6426 µs]  change: -35.900%
+edge_traversal/10000    time:   [2.5200 µs 2.6515 µs 2.7855 µs]  change: -30.486%
+
+# Shortest Path (算法 + 存储优化)
+shortest_path/grid/10x10   time:   [249.25 µs 259.41 µs 270.46 µs]  change: -36.648%
+shortest_path/grid/20x20   time:   [1.1213 ms 1.1515 ms 1.1975 ms]  change: -34.672%
+shortest_path/grid/50x50   time:   [7.9829 ms 8.2128 ms 8.5233 ms]  change: -29.263%
+
+# VLE (可变长路径扩展)
+vle/depth/2             time:   [8.2517 µs 8.3457 µs 8.4917 µs]   change: -26.691%
+vle/depth/3             time:   [12.998 µs 13.027 µs 13.056 µs]   change: -28.551%
+vle/depth/4             time:   [18.522 µs 18.585 µs 18.675 µs]   change: -32.083%
+
+# Batch Create (WriteBatch 优化)
+batch_create/10         thrpt:  [5.4387 Kelem/s 5.4936 Kelem/s 5.5264 Kelem/s]  change: +45.433%
+batch_create/100        thrpt:  [45.079 Kelem/s 45.309 Kelem/s 45.565 Kelem/s]  change: +60.699%
+batch_create/1000       thrpt:  [176.50 Kelem/s 177.44 Kelem/s 178.38 Kelem/s]  change: +71.133%
+
+# Batch Edge Create (WriteBatch 优化)
+batch_edge_create/10    thrpt:  [126.75 Kelem/s 129.03 Kelem/s 130.72 Kelem/s]  change: +82.586%
+batch_edge_create/100   thrpt:  [125.05 Kelem/s 127.07 Kelem/s 128.44 Kelem/s]  change: +75.203%
+batch_edge_create/1000  thrpt:  [120.52 Kelem/s 123.18 Kelem/s 125.10 Kelem/s]  change: +60.867%
+```
+
 ---
 
 ## 总体项目状态
@@ -5122,10 +5222,11 @@ rust-graph-db/
 
 ---
 
-**文档版本**: 8.0
-**最后更新**: 2026-02-03
+**文档版本**: 8.1
+**最后更新**: 2026-02-03 (Benchmark 验证)
 **作者**: Claude Sonnet 4.5 (Phase 1-6) + Claude Opus 4.5 (Phase 7-10)
 **总开发时间**: 25 小时
-**总代码行数**: ~10,705 行
-**测试覆盖**: 87/87 (100%)
-**完成阶段**: Phase 1-8 (8/8) ✅ 全部完成
+**总代码行数**: ~11,148 行
+**测试覆盖**: 90/90 (100%)
+**完成阶段**: Phase 1-10 (10/10) ✅ 全部完成
+**性能优化验证**: ✅ Benchmark 实测确认 30-47% 查询性能提升, 45-83% 批量写入吞吐量提升
