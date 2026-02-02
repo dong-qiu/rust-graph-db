@@ -241,7 +241,7 @@ impl QueryExecutor {
         rows: &mut Vec<Row>,
         return_clause: &ReturnClause,
     ) -> ExecutionResult<()> {
-        // For now, simple implementation: just filter bindings
+        // Step 1: Apply projection (filter bindings)
         for row in rows.iter_mut() {
             let mut new_bindings = HashMap::new();
 
@@ -276,7 +276,148 @@ impl QueryExecutor {
             row.bindings = new_bindings;
         }
 
+        // Step 2: Apply ORDER BY
+        if let Some(sort_items) = &return_clause.order_by {
+            self.apply_order_by(rows, sort_items)?;
+        }
+
+        // Step 3: Apply LIMIT
+        if let Some(limit) = return_clause.limit {
+            if limit >= 0 {
+                rows.truncate(limit as usize);
+            }
+        }
+
         Ok(())
+    }
+
+    /// Apply ORDER BY sorting to rows
+    fn apply_order_by(
+        &self,
+        rows: &mut Vec<Row>,
+        sort_items: &[SortItem],
+    ) -> ExecutionResult<()> {
+        if sort_items.is_empty() {
+            return Ok(());
+        }
+
+        // Sort rows using the sort items
+        rows.sort_by(|a, b| {
+            for sort_item in sort_items {
+                let val_a = self.evaluate_sort_expression(&sort_item.expression, a);
+                let val_b = self.evaluate_sort_expression(&sort_item.expression, b);
+
+                let ordering = match (val_a, val_b) {
+                    (Ok(ref va), Ok(ref vb)) => self.compare_values(va, vb),
+                    (Err(_), Ok(_)) => std::cmp::Ordering::Greater, // Errors go last
+                    (Ok(_), Err(_)) => std::cmp::Ordering::Less,
+                    (Err(_), Err(_)) => std::cmp::Ordering::Equal,
+                };
+
+                let ordering = if sort_item.ascending {
+                    ordering
+                } else {
+                    ordering.reverse()
+                };
+
+                if ordering != std::cmp::Ordering::Equal {
+                    return ordering;
+                }
+            }
+            std::cmp::Ordering::Equal
+        });
+
+        Ok(())
+    }
+
+    /// Evaluate an expression for sorting purposes
+    fn evaluate_sort_expression(&self, expr: &Expression, row: &Row) -> ExecutionResult<Value> {
+        match expr {
+            Expression::Variable(var) => {
+                row.get(var)
+                    .cloned()
+                    .ok_or_else(|| ExecutionError::VariableNotFound(var.clone()))
+            }
+            Expression::Property(prop) => {
+                if let Some(value) = row.get(&prop.base) {
+                    self.get_property(value, &prop.properties)
+                } else {
+                    Err(ExecutionError::VariableNotFound(prop.base.clone()))
+                }
+            }
+            Expression::Literal(lit) => Ok(self.literal_to_value(lit)),
+            _ => Err(ExecutionError::UnsupportedOperation(
+                "Complex expressions in ORDER BY".to_string(),
+            )),
+        }
+    }
+
+    /// Convert a Literal to a Value
+    fn literal_to_value(&self, lit: &Literal) -> Value {
+        match lit {
+            Literal::Null => Value::Null,
+            Literal::Boolean(b) => Value::Boolean(*b),
+            Literal::Integer(i) => Value::Integer(*i),
+            Literal::Float(f) => Value::Float(*f),
+            Literal::String(s) => Value::String(s.clone()),
+            Literal::List(items) => {
+                Value::List(
+                    items.iter()
+                        .filter_map(|e| match e {
+                            Expression::Literal(lit) => Some(self.literal_to_value(lit)),
+                            _ => None,
+                        })
+                        .collect()
+                )
+            }
+            Literal::Map(map) => {
+                Value::Map(
+                    map.iter()
+                        .filter_map(|(k, v)| match v {
+                            Expression::Literal(lit) => Some((k.clone(), self.literal_to_value(lit))),
+                            _ => None,
+                        })
+                        .collect()
+                )
+            }
+        }
+    }
+
+    /// Compare two values for sorting
+    fn compare_values(&self, left: &Value, right: &Value) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+
+        match (left, right) {
+            // Null handling: NULL is always last
+            (Value::Null, Value::Null) => Ordering::Equal,
+            (Value::Null, _) => Ordering::Greater,
+            (_, Value::Null) => Ordering::Less,
+
+            // Integer comparison
+            (Value::Integer(a), Value::Integer(b)) => a.cmp(b),
+
+            // Float comparison
+            (Value::Float(a), Value::Float(b)) => {
+                a.partial_cmp(b).unwrap_or(Ordering::Equal)
+            }
+
+            // Mixed numeric comparison
+            (Value::Integer(a), Value::Float(b)) => {
+                (*a as f64).partial_cmp(b).unwrap_or(Ordering::Equal)
+            }
+            (Value::Float(a), Value::Integer(b)) => {
+                a.partial_cmp(&(*b as f64)).unwrap_or(Ordering::Equal)
+            }
+
+            // String comparison
+            (Value::String(a), Value::String(b)) => a.cmp(b),
+
+            // Boolean comparison (false < true)
+            (Value::Boolean(a), Value::Boolean(b)) => a.cmp(b),
+
+            // Different types: compare by type name
+            _ => format!("{:?}", left).cmp(&format!("{:?}", right)),
+        }
     }
 
     fn get_property(&self, value: &Value, properties: &[String]) -> ExecutionResult<Value> {
@@ -341,6 +482,8 @@ impl QueryExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::rocksdb_store::RocksDbStorage;
+    use tempfile::TempDir;
 
     #[test]
     fn test_value_conversions() {
@@ -363,5 +506,203 @@ mod tests {
         assert_eq!(row.get("x"), Some(&Value::Integer(42)));
         assert_eq!(row.get("y"), Some(&Value::String("hello".to_string())));
         assert_eq!(row.get("z"), None);
+    }
+
+    fn create_test_executor() -> (QueryExecutor, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let storage: Arc<dyn GraphStorage> = Arc::new(
+            RocksDbStorage::new(temp_dir.path(), "test_graph").unwrap()
+        );
+        (QueryExecutor::new(storage), temp_dir)
+    }
+
+    #[test]
+    fn test_order_by_integer_asc() {
+        let (executor, _temp) = create_test_executor();
+
+        let mut rows = vec![
+            Row::new().with_binding("age", Value::Integer(30)),
+            Row::new().with_binding("age", Value::Integer(25)),
+            Row::new().with_binding("age", Value::Integer(35)),
+        ];
+
+        let sort_items = vec![SortItem {
+            expression: Expression::Variable("age".to_string()),
+            ascending: true,
+        }];
+
+        executor.apply_order_by(&mut rows, &sort_items).unwrap();
+
+        assert_eq!(rows[0].get("age"), Some(&Value::Integer(25)));
+        assert_eq!(rows[1].get("age"), Some(&Value::Integer(30)));
+        assert_eq!(rows[2].get("age"), Some(&Value::Integer(35)));
+    }
+
+    #[test]
+    fn test_order_by_integer_desc() {
+        let (executor, _temp) = create_test_executor();
+
+        let mut rows = vec![
+            Row::new().with_binding("age", Value::Integer(30)),
+            Row::new().with_binding("age", Value::Integer(25)),
+            Row::new().with_binding("age", Value::Integer(35)),
+        ];
+
+        let sort_items = vec![SortItem {
+            expression: Expression::Variable("age".to_string()),
+            ascending: false,
+        }];
+
+        executor.apply_order_by(&mut rows, &sort_items).unwrap();
+
+        assert_eq!(rows[0].get("age"), Some(&Value::Integer(35)));
+        assert_eq!(rows[1].get("age"), Some(&Value::Integer(30)));
+        assert_eq!(rows[2].get("age"), Some(&Value::Integer(25)));
+    }
+
+    #[test]
+    fn test_order_by_string() {
+        let (executor, _temp) = create_test_executor();
+
+        let mut rows = vec![
+            Row::new().with_binding("name", Value::String("Charlie".to_string())),
+            Row::new().with_binding("name", Value::String("Alice".to_string())),
+            Row::new().with_binding("name", Value::String("Bob".to_string())),
+        ];
+
+        let sort_items = vec![SortItem {
+            expression: Expression::Variable("name".to_string()),
+            ascending: true,
+        }];
+
+        executor.apply_order_by(&mut rows, &sort_items).unwrap();
+
+        assert_eq!(rows[0].get("name"), Some(&Value::String("Alice".to_string())));
+        assert_eq!(rows[1].get("name"), Some(&Value::String("Bob".to_string())));
+        assert_eq!(rows[2].get("name"), Some(&Value::String("Charlie".to_string())));
+    }
+
+    #[test]
+    fn test_order_by_with_nulls() {
+        let (executor, _temp) = create_test_executor();
+
+        let mut rows = vec![
+            Row::new().with_binding("age", Value::Integer(30)),
+            Row::new().with_binding("age", Value::Null),
+            Row::new().with_binding("age", Value::Integer(25)),
+        ];
+
+        let sort_items = vec![SortItem {
+            expression: Expression::Variable("age".to_string()),
+            ascending: true,
+        }];
+
+        executor.apply_order_by(&mut rows, &sort_items).unwrap();
+
+        // NULL should be last
+        assert_eq!(rows[0].get("age"), Some(&Value::Integer(25)));
+        assert_eq!(rows[1].get("age"), Some(&Value::Integer(30)));
+        assert_eq!(rows[2].get("age"), Some(&Value::Null));
+    }
+
+    #[test]
+    fn test_order_by_multiple_columns() {
+        let (executor, _temp) = create_test_executor();
+
+        let mut rows = vec![
+            Row::new()
+                .with_binding("city", Value::String("Beijing".to_string()))
+                .with_binding("age", Value::Integer(30)),
+            Row::new()
+                .with_binding("city", Value::String("Beijing".to_string()))
+                .with_binding("age", Value::Integer(25)),
+            Row::new()
+                .with_binding("city", Value::String("Shanghai".to_string()))
+                .with_binding("age", Value::Integer(28)),
+        ];
+
+        // ORDER BY city ASC, age ASC
+        let sort_items = vec![
+            SortItem {
+                expression: Expression::Variable("city".to_string()),
+                ascending: true,
+            },
+            SortItem {
+                expression: Expression::Variable("age".to_string()),
+                ascending: true,
+            },
+        ];
+
+        executor.apply_order_by(&mut rows, &sort_items).unwrap();
+
+        // Beijing should come first, then sorted by age
+        assert_eq!(rows[0].get("city"), Some(&Value::String("Beijing".to_string())));
+        assert_eq!(rows[0].get("age"), Some(&Value::Integer(25)));
+        assert_eq!(rows[1].get("city"), Some(&Value::String("Beijing".to_string())));
+        assert_eq!(rows[1].get("age"), Some(&Value::Integer(30)));
+        assert_eq!(rows[2].get("city"), Some(&Value::String("Shanghai".to_string())));
+    }
+
+    #[test]
+    fn test_limit() {
+        let (executor, _temp) = create_test_executor();
+
+        let mut rows = vec![
+            Row::new().with_binding("n", Value::Integer(1)),
+            Row::new().with_binding("n", Value::Integer(2)),
+            Row::new().with_binding("n", Value::Integer(3)),
+            Row::new().with_binding("n", Value::Integer(4)),
+            Row::new().with_binding("n", Value::Integer(5)),
+        ];
+
+        let return_clause = ReturnClause {
+            items: vec![ReturnItem {
+                expression: Expression::Variable("n".to_string()),
+                alias: None,
+            }],
+            order_by: None,
+            limit: Some(3),
+        };
+
+        executor.apply_return(&mut rows, &return_clause).unwrap();
+
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].get("n"), Some(&Value::Integer(1)));
+        assert_eq!(rows[1].get("n"), Some(&Value::Integer(2)));
+        assert_eq!(rows[2].get("n"), Some(&Value::Integer(3)));
+    }
+
+    #[test]
+    fn test_order_by_and_limit() {
+        let (executor, _temp) = create_test_executor();
+
+        let mut rows = vec![
+            Row::new().with_binding("age", Value::Integer(30)),
+            Row::new().with_binding("age", Value::Integer(25)),
+            Row::new().with_binding("age", Value::Integer(35)),
+            Row::new().with_binding("age", Value::Integer(20)),
+            Row::new().with_binding("age", Value::Integer(40)),
+        ];
+
+        // ORDER BY age DESC LIMIT 3
+        let return_clause = ReturnClause {
+            items: vec![ReturnItem {
+                expression: Expression::Variable("age".to_string()),
+                alias: None,
+            }],
+            order_by: Some(vec![SortItem {
+                expression: Expression::Variable("age".to_string()),
+                ascending: false,
+            }]),
+            limit: Some(3),
+        };
+
+        executor.apply_return(&mut rows, &return_clause).unwrap();
+
+        assert_eq!(rows.len(), 3);
+        // Should be top 3 oldest: 40, 35, 30
+        assert_eq!(rows[0].get("age"), Some(&Value::Integer(40)));
+        assert_eq!(rows[1].get("age"), Some(&Value::Integer(35)));
+        assert_eq!(rows[2].get("age"), Some(&Value::Integer(30)));
     }
 }
