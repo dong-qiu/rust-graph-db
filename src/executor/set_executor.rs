@@ -179,7 +179,7 @@ impl SetExecutor {
         row: &Row,
     ) -> ExecutionResult<serde_json::Value> {
         match expr {
-            Expression::Literal(lit) => Ok(self.literal_to_json(lit)),
+            Expression::Literal(lit) => self.literal_to_json(lit),
             Expression::Variable(var) => {
                 let value = row
                     .get(var)
@@ -308,24 +308,32 @@ impl SetExecutor {
         }
     }
 
-    fn literal_to_json(&self, lit: &Literal) -> serde_json::Value {
+    fn literal_to_json(&self, lit: &Literal) -> ExecutionResult<serde_json::Value> {
         match lit {
-            Literal::Null => serde_json::Value::Null,
-            Literal::Boolean(b) => serde_json::Value::Bool(*b),
-            Literal::Integer(i) => serde_json::Value::Number((*i).into()),
+            Literal::Null => Ok(serde_json::Value::Null),
+            Literal::Boolean(b) => Ok(serde_json::Value::Bool(*b)),
+            Literal::Integer(i) => Ok(serde_json::Value::Number((*i).into())),
             Literal::Float(f) => {
-                serde_json::Value::Number(serde_json::Number::from_f64(*f).unwrap())
+                serde_json::Number::from_f64(*f)
+                    .map(serde_json::Value::Number)
+                    .ok_or_else(|| ExecutionError::InvalidExpression(
+                        format!("Invalid float value: {}", f)
+                    ))
             }
-            Literal::String(s) => serde_json::Value::String(s.clone()),
+            Literal::String(s) => Ok(serde_json::Value::String(s.clone())),
             Literal::List(items) => {
-                serde_json::Value::Array(items.iter().map(|e| self.evaluate_expression(e, &Row::new()).unwrap()).collect())
+                let values: ExecutionResult<Vec<_>> = items
+                    .iter()
+                    .map(|e| self.evaluate_expression(e, &Row::new()))
+                    .collect();
+                Ok(serde_json::Value::Array(values?))
             }
             Literal::Map(map) => {
-                let obj: serde_json::Map<String, serde_json::Value> = map
+                let obj: ExecutionResult<serde_json::Map<String, serde_json::Value>> = map
                     .iter()
-                    .map(|(k, v)| (k.clone(), self.evaluate_expression(v, &Row::new()).unwrap()))
+                    .map(|(k, v)| Ok((k.clone(), self.evaluate_expression(v, &Row::new())?)))
                     .collect();
-                serde_json::Value::Object(obj)
+                Ok(serde_json::Value::Object(obj?))
             }
         }
     }

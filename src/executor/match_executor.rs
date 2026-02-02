@@ -76,20 +76,22 @@ impl MatchExecutor {
         let label = node.label.as_deref().unwrap_or("");
         let vertices = self.storage.scan_vertices(label).await?;
 
-        let mut results = Vec::new();
-
-        for vertex in vertices {
-            // Check property constraints
-            if self.match_node_properties(&vertex, node)? {
-                let mut row = Row::new();
-                if let Some(var) = &node.variable {
-                    row.insert(var.clone(), Value::Vertex(vertex));
+        vertices
+            .into_iter()
+            .filter_map(|vertex| {
+                match self.match_node_properties(&vertex, node) {
+                    Ok(true) => {
+                        let mut row = Row::new();
+                        if let Some(var) = &node.variable {
+                            row.insert(var.clone(), Value::Vertex(vertex));
+                        }
+                        Some(Ok(row))
+                    }
+                    Ok(false) => None,
+                    Err(e) => Some(Err(e)),
                 }
-                results.push(row);
-            }
-        }
-
-        Ok(results)
+            })
+            .collect()
     }
 
     async fn match_edge_pattern(&self, pattern: &Pattern) -> ExecutionResult<Vec<Row>> {
@@ -251,8 +253,13 @@ impl MatchExecutor {
         // For each first hop result, match second hop
         for first_row in first_hop_results {
             // Get the middle node
-            let middle_var = nodes[1].variable.as_ref().unwrap();
-            let middle_vertex = first_row.get(middle_var).unwrap().as_vertex()?;
+            let middle_var = nodes[1].variable.as_ref()
+                .ok_or_else(|| ExecutionError::InvalidExpression(
+                    "Middle node in path pattern must have a variable".to_string()
+                ))?;
+            let middle_vertex = first_row.get(middle_var)
+                .ok_or_else(|| ExecutionError::VariableNotFound(middle_var.clone()))?
+                .as_vertex()?;
 
             // Match second hop starting from middle node
             let second_edges = match edges[1].direction {
@@ -352,31 +359,39 @@ impl MatchExecutor {
 
     fn evaluate_literal(&self, expr: &Expression) -> ExecutionResult<serde_json::Value> {
         match expr {
-            Expression::Literal(lit) => Ok(self.literal_to_json(lit)),
+            Expression::Literal(lit) => self.literal_to_json(lit),
             _ => Err(ExecutionError::InvalidExpression(
                 "Only literals supported in property patterns".to_string(),
             )),
         }
     }
 
-    fn literal_to_json(&self, lit: &Literal) -> serde_json::Value {
+    fn literal_to_json(&self, lit: &Literal) -> ExecutionResult<serde_json::Value> {
         match lit {
-            Literal::Null => serde_json::Value::Null,
-            Literal::Boolean(b) => serde_json::Value::Bool(*b),
-            Literal::Integer(i) => serde_json::Value::Number((*i).into()),
+            Literal::Null => Ok(serde_json::Value::Null),
+            Literal::Boolean(b) => Ok(serde_json::Value::Bool(*b)),
+            Literal::Integer(i) => Ok(serde_json::Value::Number((*i).into())),
             Literal::Float(f) => {
-                serde_json::Value::Number(serde_json::Number::from_f64(*f).unwrap())
+                serde_json::Number::from_f64(*f)
+                    .map(serde_json::Value::Number)
+                    .ok_or_else(|| ExecutionError::InvalidExpression(
+                        format!("Invalid float value: {}", f)
+                    ))
             }
-            Literal::String(s) => serde_json::Value::String(s.clone()),
+            Literal::String(s) => Ok(serde_json::Value::String(s.clone())),
             Literal::List(items) => {
-                serde_json::Value::Array(items.iter().map(|e| self.evaluate_literal(e).unwrap()).collect())
+                let values: ExecutionResult<Vec<_>> = items
+                    .iter()
+                    .map(|e| self.evaluate_literal(e))
+                    .collect();
+                Ok(serde_json::Value::Array(values?))
             }
             Literal::Map(map) => {
-                let obj: serde_json::Map<String, serde_json::Value> = map
+                let obj: ExecutionResult<serde_json::Map<String, serde_json::Value>> = map
                     .iter()
-                    .map(|(k, v)| (k.clone(), self.evaluate_literal(v).unwrap()))
+                    .map(|(k, v)| Ok((k.clone(), self.evaluate_literal(v)?)))
                     .collect();
-                serde_json::Value::Object(obj)
+                Ok(serde_json::Value::Object(obj?))
             }
         }
     }

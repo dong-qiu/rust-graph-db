@@ -45,8 +45,9 @@ pub enum ExecutionError {
 pub type ExecutionResult<T> = Result<T, ExecutionError>;
 
 /// A value in the execution context
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub enum Value {
+    #[default]
     Null,
     Boolean(bool),
     Integer(i64),
@@ -113,20 +114,18 @@ impl Value {
 }
 
 /// A row of values (result of pattern matching)
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Row {
     pub bindings: HashMap<String, Value>,
 }
 
 impl Row {
     pub fn new() -> Self {
-        Self {
-            bindings: HashMap::new(),
-        }
+        Self::default()
     }
 
-    pub fn with_binding(mut self, name: String, value: Value) -> Self {
-        self.bindings.insert(name, value);
+    pub fn with_binding(mut self, name: impl Into<String>, value: Value) -> Self {
+        self.bindings.insert(name.into(), value);
         self
     }
 
@@ -134,14 +133,8 @@ impl Row {
         self.bindings.get(name)
     }
 
-    pub fn insert(&mut self, name: String, value: Value) {
-        self.bindings.insert(name, value);
-    }
-}
-
-impl Default for Row {
-    fn default() -> Self {
-        Self::new()
+    pub fn insert(&mut self, name: impl Into<String>, value: Value) {
+        self.bindings.insert(name.into(), value);
     }
 }
 

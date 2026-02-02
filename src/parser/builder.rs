@@ -141,57 +141,49 @@ fn build_mixed_query(pair: Pair<Rule>) -> ParseResult<CypherQuery> {
 }
 
 fn build_match_clause(pair: Pair<Rule>) -> ParseResult<MatchClause> {
-    let mut patterns = Vec::new();
+    let patterns: ParseResult<Vec<_>> = pair
+        .into_inner()
+        .filter(|p| p.as_rule() == Rule::pattern)
+        .map(build_pattern)
+        .collect();
 
-    for inner_pair in pair.into_inner() {
-        if inner_pair.as_rule() == Rule::pattern {
-            patterns.push(build_pattern(inner_pair)?);
-        }
-    }
-
-    Ok(MatchClause { patterns })
+    Ok(MatchClause { patterns: patterns? })
 }
 
 fn build_create_clause(pair: Pair<Rule>) -> ParseResult<WriteClause> {
-    let mut patterns = Vec::new();
+    let patterns: ParseResult<Vec<_>> = pair
+        .into_inner()
+        .filter(|p| p.as_rule() == Rule::pattern)
+        .map(build_pattern)
+        .collect();
 
-    for inner_pair in pair.into_inner() {
-        if inner_pair.as_rule() == Rule::pattern {
-            patterns.push(build_pattern(inner_pair)?);
-        }
-    }
-
-    Ok(WriteClause::Create { patterns })
+    Ok(WriteClause::Create { patterns: patterns? })
 }
 
 fn build_delete_clause(pair: Pair<Rule>) -> ParseResult<WriteClause> {
     let text = pair.as_str();
     let detach = text.to_uppercase().starts_with("DETACH");
 
-    let mut expressions = Vec::new();
-
-    for inner_pair in pair.into_inner() {
-        if inner_pair.as_rule() == Rule::expression {
-            expressions.push(build_expression(inner_pair)?);
-        }
-    }
+    let expressions: ParseResult<Vec<_>> = pair
+        .into_inner()
+        .filter(|p| p.as_rule() == Rule::expression)
+        .map(build_expression)
+        .collect();
 
     Ok(WriteClause::Delete {
-        expressions,
+        expressions: expressions?,
         detach,
     })
 }
 
 fn build_set_clause(pair: Pair<Rule>) -> ParseResult<WriteClause> {
-    let mut items = Vec::new();
+    let items: ParseResult<Vec<_>> = pair
+        .into_inner()
+        .filter(|p| p.as_rule() == Rule::set_item)
+        .map(build_set_item)
+        .collect();
 
-    for inner_pair in pair.into_inner() {
-        if inner_pair.as_rule() == Rule::set_item {
-            items.push(build_set_item(inner_pair)?);
-        }
-    }
-
-    Ok(WriteClause::Set { items })
+    Ok(WriteClause::Set { items: items? })
 }
 
 fn build_set_item(pair: Pair<Rule>) -> ParseResult<SetItem> {
@@ -265,15 +257,10 @@ fn build_return_item(pair: Pair<Rule>) -> ParseResult<ReturnItem> {
 }
 
 fn build_order_by(pair: Pair<Rule>) -> ParseResult<Vec<SortItem>> {
-    let mut items = Vec::new();
-
-    for inner_pair in pair.into_inner() {
-        if inner_pair.as_rule() == Rule::sort_item {
-            items.push(build_sort_item(inner_pair)?);
-        }
-    }
-
-    Ok(items)
+    pair.into_inner()
+        .filter(|p| p.as_rule() == Rule::sort_item)
+        .map(build_sort_item)
+        .collect()
 }
 
 fn build_sort_item(pair: Pair<Rule>) -> ParseResult<SortItem> {
