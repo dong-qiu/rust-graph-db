@@ -5170,6 +5170,133 @@ batch_edge_create/1000  thrpt:  [120.52 Kelem/s 123.18 Kelem/s 125.10 Kelem/s]  
 
 ---
 
+## Phase 12: 聚合函数实现
+
+**开始时间**: 2026-02-03
+**完成时间**: 2026-02-03
+**开发者**: Claude Opus 4.5
+
+### 12.1 任务背景
+
+实现 Cypher 查询的聚合函数：COUNT, SUM, AVG, MIN, MAX。解析器已支持这些函数的语法，但执行器尚未实现。
+
+### 12.2 实现内容
+
+#### 修改文件: `src/executor/mod.rs`
+
+| 函数 | 说明 |
+|------|------|
+| `contains_aggregate()` | 检测表达式是否包含聚合函数 |
+| `compute_aggregates()` | 计算所有聚合结果 |
+| `evaluate_aggregate()` | 计算单个聚合表达式 |
+| `aggregate_count()` | COUNT(*) 和 COUNT(expr) |
+| `aggregate_sum()` | SUM(expr) - 支持整数和浮点数 |
+| `aggregate_avg()` | AVG(expr) - 返回浮点数 |
+| `aggregate_min()` | MIN(expr) - 支持数字和字符串 |
+| `aggregate_max()` | MAX(expr) - 支持数字和字符串 |
+| `evaluate_row_expression()` | 对单行计算表达式值 |
+
+#### 功能特性
+
+1. **COUNT**
+   - `COUNT(*)` - 计算所有行数
+   - `COUNT(expr)` - 计算非 NULL 值的个数
+
+2. **SUM**
+   - 支持 Integer 和 Float
+   - 自动类型推断（有 Float 则返回 Float）
+   - NULL 值被忽略
+
+3. **AVG**
+   - 始终返回 Float
+   - NULL 值被忽略（不参与计数和求和）
+
+4. **MIN/MAX**
+   - 支持 Integer, Float, String, Boolean
+   - NULL 值被忽略
+
+5. **空结果处理**
+   - `COUNT(*)` 返回 0
+   - 其他聚合函数返回 NULL
+
+#### 使用示例
+
+```cypher
+-- 计数
+MATCH (p:Person) RETURN COUNT(*) AS total
+
+-- 求和和平均
+MATCH (p:Person) RETURN SUM(p.age) AS total_age, AVG(p.age) AS avg_age
+
+-- 最大最小值
+MATCH (p:Person) RETURN MIN(p.age), MAX(p.age)
+
+-- 组合查询
+MATCH (p:Person) RETURN COUNT(*), SUM(p.salary), AVG(p.salary)
+```
+
+### 12.3 新增测试
+
+| 测试 | 说明 |
+|------|------|
+| `test_aggregate_count_all` | COUNT(*) 计算所有行 |
+| `test_aggregate_count_expr` | COUNT(expr) 跳过 NULL |
+| `test_aggregate_sum_integers` | 整数求和 |
+| `test_aggregate_sum_floats` | 浮点数求和 |
+| `test_aggregate_sum_with_nulls` | SUM 跳过 NULL |
+| `test_aggregate_avg` | 平均值计算 |
+| `test_aggregate_avg_with_nulls` | AVG 跳过 NULL |
+| `test_aggregate_min_integers` | 整数最小值 |
+| `test_aggregate_min_strings` | 字符串最小值 |
+| `test_aggregate_max_integers` | 整数最大值 |
+| `test_aggregate_max_with_nulls` | MAX 跳过 NULL |
+| `test_aggregate_empty_rows` | 空数据集聚合 |
+| `test_apply_return_with_count` | RETURN COUNT(*) 集成 |
+| `test_apply_return_with_multiple_aggregates` | 多聚合函数 |
+
+### 12.4 测试验证
+
+```
+running 37 tests (executor module)
+test executor::tests::test_aggregate_count_all ... ok
+test executor::tests::test_aggregate_count_expr ... ok
+test executor::tests::test_aggregate_sum_integers ... ok
+test executor::tests::test_aggregate_sum_floats ... ok
+test executor::tests::test_aggregate_sum_with_nulls ... ok
+test executor::tests::test_aggregate_avg ... ok
+test executor::tests::test_aggregate_avg_with_nulls ... ok
+test executor::tests::test_aggregate_min_integers ... ok
+test executor::tests::test_aggregate_min_strings ... ok
+test executor::tests::test_aggregate_max_integers ... ok
+test executor::tests::test_aggregate_max_with_nulls ... ok
+test executor::tests::test_aggregate_empty_rows ... ok
+test executor::tests::test_apply_return_with_count ... ok
+test executor::tests::test_apply_return_with_multiple_aggregates ... ok
+...
+test result: ok. 37 passed; 0 failed
+```
+
+### 12.5 代码变更统计
+
+| 文件 | 新增行数 | 说明 |
+|------|----------|------|
+| `src/executor/mod.rs` | +350 | 聚合函数实现 + 14 个测试 |
+
+### 12.6 Phase 12 完成状态
+
+| 任务 | 状态 |
+|------|------|
+| COUNT(*) | ✅ 完成 |
+| COUNT(expr) | ✅ 完成 |
+| SUM | ✅ 完成 |
+| AVG | ✅ 完成 |
+| MIN | ✅ 完成 |
+| MAX | ✅ 完成 |
+| NULL 处理 | ✅ 完成 |
+| 单元测试 | ✅ 完成 (14 个新测试) |
+
+---
+
 ## Phase 11: ORDER BY + LIMIT 实现
 
 **开始时间**: 2026-02-03
@@ -5279,7 +5406,8 @@ test result: ok. 23 passed; 0 failed
 | Phase 9: Rust 惯用性重构 | ✅ | 87/87 | +11 | 1小时 |
 | Phase 10: 性能优化 | ✅ | 90/90 | +432 | 1小时 |
 | Phase 11: ORDER BY + LIMIT | ✅ | 97/97 | +180 | 0.5小时 |
-| **总计** | **✅** | **97/97** | **~11,328** | **25.5小时** |
+| Phase 12: 聚合函数 | ✅ | 111/111 | +350 | 0.5小时 |
+| **总计** | **✅** | **111/111** | **~11,678** | **26小时** |
 
 ### 项目产物清单
 
@@ -5315,11 +5443,11 @@ rust-graph-db/
 
 ---
 
-**文档版本**: 8.2
-**最后更新**: 2026-02-03 (ORDER BY + LIMIT)
-**作者**: Claude Sonnet 4.5 (Phase 1-6) + Claude Opus 4.5 (Phase 7-11)
-**总开发时间**: 25.5 小时
-**总代码行数**: ~11,328 行
-**测试覆盖**: 97/97 (100%)
-**完成阶段**: Phase 1-11 (11/11) ✅ 全部完成
+**文档版本**: 8.3
+**最后更新**: 2026-02-03 (聚合函数)
+**作者**: Claude Sonnet 4.5 (Phase 1-6) + Claude Opus 4.5 (Phase 7-12)
+**总开发时间**: 26 小时
+**总代码行数**: ~11,678 行
+**测试覆盖**: 111/111 (100%)
+**完成阶段**: Phase 1-12 (12/12) ✅ 全部完成
 **性能优化验证**: ✅ Benchmark 实测确认 30-47% 查询性能提升, 45-83% 批量写入吞吐量提升

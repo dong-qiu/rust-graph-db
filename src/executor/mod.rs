@@ -241,54 +241,349 @@ impl QueryExecutor {
         rows: &mut Vec<Row>,
         return_clause: &ReturnClause,
     ) -> ExecutionResult<()> {
-        // Step 1: Apply projection (filter bindings)
-        for row in rows.iter_mut() {
-            let mut new_bindings = HashMap::new();
+        // Check if any return item contains an aggregate function
+        let has_aggregates = return_clause.items.iter().any(|item| {
+            self.contains_aggregate(&item.expression)
+        });
 
-            for item in &return_clause.items {
-                match &item.expression {
-                    Expression::Variable(var) => {
-                        if let Some(value) = row.get(var) {
-                            let key = item.alias.clone().unwrap_or_else(|| var.clone());
-                            new_bindings.insert(key, value.clone());
+        if has_aggregates {
+            // Aggregate mode: compute aggregates over all rows
+            let aggregated_row = self.compute_aggregates(rows, &return_clause.items)?;
+            rows.clear();
+            rows.push(aggregated_row);
+        } else {
+            // Normal mode: Apply projection (filter bindings)
+            for row in rows.iter_mut() {
+                let mut new_bindings = HashMap::new();
+
+                for item in &return_clause.items {
+                    match &item.expression {
+                        Expression::Variable(var) => {
+                            if let Some(value) = row.get(var) {
+                                let key = item.alias.clone().unwrap_or_else(|| var.clone());
+                                new_bindings.insert(key, value.clone());
+                            }
                         }
-                    }
-                    Expression::Property(prop) => {
-                        // Handle property access like n.name
-                        if let Some(value) = row.get(&prop.base) {
-                            let prop_value = self.get_property(value, &prop.properties)?;
-                            let key = item
-                                .alias
-                                .clone()
-                                .unwrap_or_else(|| format!("{}.{}", prop.base, prop.properties.join(".")));
-                            new_bindings.insert(key, prop_value);
+                        Expression::Property(prop) => {
+                            // Handle property access like n.name
+                            if let Some(value) = row.get(&prop.base) {
+                                let prop_value = self.get_property(value, &prop.properties)?;
+                                let key = item
+                                    .alias
+                                    .clone()
+                                    .unwrap_or_else(|| format!("{}.{}", prop.base, prop.properties.join(".")));
+                                new_bindings.insert(key, prop_value);
+                            }
                         }
-                    }
-                    _ => {
-                        // TODO: Evaluate complex expressions
-                        return Err(ExecutionError::UnsupportedOperation(
-                            "Complex expressions in RETURN".to_string(),
-                        ));
+                        _ => {
+                            // TODO: Evaluate complex expressions
+                            return Err(ExecutionError::UnsupportedOperation(
+                                "Complex expressions in RETURN".to_string(),
+                            ));
+                        }
                     }
                 }
+
+                row.bindings = new_bindings;
             }
 
-            row.bindings = new_bindings;
-        }
+            // Apply ORDER BY (only for non-aggregate queries)
+            if let Some(sort_items) = &return_clause.order_by {
+                self.apply_order_by(rows, sort_items)?;
+            }
 
-        // Step 2: Apply ORDER BY
-        if let Some(sort_items) = &return_clause.order_by {
-            self.apply_order_by(rows, sort_items)?;
-        }
-
-        // Step 3: Apply LIMIT
-        if let Some(limit) = return_clause.limit {
-            if limit >= 0 {
-                rows.truncate(limit as usize);
+            // Apply LIMIT
+            if let Some(limit) = return_clause.limit {
+                if limit >= 0 {
+                    rows.truncate(limit as usize);
+                }
             }
         }
 
         Ok(())
+    }
+
+    /// Check if an expression contains an aggregate function
+    fn contains_aggregate(&self, expr: &Expression) -> bool {
+        match expr {
+            Expression::FunctionCall { name, .. } => {
+                let name_upper = name.to_uppercase();
+                matches!(name_upper.as_str(), "COUNT" | "SUM" | "AVG" | "MIN" | "MAX")
+            }
+            Expression::BinaryOp { left, right, .. } => {
+                self.contains_aggregate(left) || self.contains_aggregate(right)
+            }
+            Expression::UnaryOp { expr, .. } => self.contains_aggregate(expr),
+            _ => false,
+        }
+    }
+
+    /// Compute aggregates over all rows
+    fn compute_aggregates(
+        &self,
+        rows: &[Row],
+        items: &[ReturnItem],
+    ) -> ExecutionResult<Row> {
+        let mut result = Row::new();
+
+        for item in items {
+            let key = self.get_return_key(item);
+            let value = self.evaluate_aggregate(&item.expression, rows)?;
+            result.insert(key, value);
+        }
+
+        Ok(result)
+    }
+
+    /// Get the key name for a return item
+    fn get_return_key(&self, item: &ReturnItem) -> String {
+        if let Some(alias) = &item.alias {
+            alias.clone()
+        } else {
+            match &item.expression {
+                Expression::Variable(var) => var.clone(),
+                Expression::Property(prop) => {
+                    format!("{}.{}", prop.base, prop.properties.join("."))
+                }
+                Expression::FunctionCall { name, args } => {
+                    if args.is_empty() {
+                        format!("{}()", name)
+                    } else {
+                        format!("{}(...)", name)
+                    }
+                }
+                _ => "expr".to_string(),
+            }
+        }
+    }
+
+    /// Evaluate an aggregate expression
+    fn evaluate_aggregate(&self, expr: &Expression, rows: &[Row]) -> ExecutionResult<Value> {
+        match expr {
+            Expression::FunctionCall { name, args } => {
+                let name_upper = name.to_uppercase();
+                match name_upper.as_str() {
+                    "COUNT" => self.aggregate_count(args, rows),
+                    "SUM" => self.aggregate_sum(args, rows),
+                    "AVG" => self.aggregate_avg(args, rows),
+                    "MIN" => self.aggregate_min(args, rows),
+                    "MAX" => self.aggregate_max(args, rows),
+                    _ => Err(ExecutionError::UnsupportedOperation(
+                        format!("Unknown aggregate function: {}", name),
+                    )),
+                }
+            }
+            Expression::Variable(var) => {
+                // Non-aggregate in aggregate context: return first row's value
+                rows.first()
+                    .and_then(|row| row.get(var).cloned())
+                    .ok_or_else(|| ExecutionError::VariableNotFound(var.clone()))
+            }
+            Expression::Property(prop) => {
+                // Non-aggregate property: return first row's value
+                if let Some(row) = rows.first() {
+                    if let Some(value) = row.get(&prop.base) {
+                        return self.get_property(value, &prop.properties);
+                    }
+                }
+                Err(ExecutionError::VariableNotFound(prop.base.clone()))
+            }
+            _ => Err(ExecutionError::UnsupportedOperation(
+                "Unsupported expression in aggregate context".to_string(),
+            )),
+        }
+    }
+
+    /// COUNT aggregate function
+    fn aggregate_count(&self, args: &[Expression], rows: &[Row]) -> ExecutionResult<Value> {
+        if args.is_empty() {
+            // COUNT(*) - count all rows
+            return Ok(Value::Integer(rows.len() as i64));
+        }
+
+        // COUNT(expr) - count non-null values
+        let arg = &args[0];
+        let count = rows.iter().filter(|row| {
+            match self.evaluate_row_expression(arg, row) {
+                Ok(Value::Null) => false,
+                Ok(_) => true,
+                Err(_) => false,
+            }
+        }).count();
+
+        Ok(Value::Integer(count as i64))
+    }
+
+    /// SUM aggregate function
+    fn aggregate_sum(&self, args: &[Expression], rows: &[Row]) -> ExecutionResult<Value> {
+        if args.is_empty() {
+            return Err(ExecutionError::InvalidExpression(
+                "SUM requires an argument".to_string(),
+            ));
+        }
+
+        let arg = &args[0];
+        let mut sum_int: i64 = 0;
+        let mut sum_float: f64 = 0.0;
+        let mut has_float = false;
+        let mut count = 0;
+
+        for row in rows {
+            match self.evaluate_row_expression(arg, row)? {
+                Value::Integer(i) => {
+                    sum_int += i;
+                    sum_float += i as f64;
+                    count += 1;
+                }
+                Value::Float(f) => {
+                    sum_float += f;
+                    has_float = true;
+                    count += 1;
+                }
+                Value::Null => {} // Skip nulls
+                _ => {
+                    return Err(ExecutionError::TypeMismatch {
+                        expected: "Number".to_string(),
+                        actual: "Non-numeric value".to_string(),
+                    });
+                }
+            }
+        }
+
+        if count == 0 {
+            return Ok(Value::Null);
+        }
+
+        if has_float {
+            Ok(Value::Float(sum_float))
+        } else {
+            Ok(Value::Integer(sum_int))
+        }
+    }
+
+    /// AVG aggregate function
+    fn aggregate_avg(&self, args: &[Expression], rows: &[Row]) -> ExecutionResult<Value> {
+        if args.is_empty() {
+            return Err(ExecutionError::InvalidExpression(
+                "AVG requires an argument".to_string(),
+            ));
+        }
+
+        let arg = &args[0];
+        let mut sum: f64 = 0.0;
+        let mut count = 0;
+
+        for row in rows {
+            match self.evaluate_row_expression(arg, row)? {
+                Value::Integer(i) => {
+                    sum += i as f64;
+                    count += 1;
+                }
+                Value::Float(f) => {
+                    sum += f;
+                    count += 1;
+                }
+                Value::Null => {} // Skip nulls
+                _ => {
+                    return Err(ExecutionError::TypeMismatch {
+                        expected: "Number".to_string(),
+                        actual: "Non-numeric value".to_string(),
+                    });
+                }
+            }
+        }
+
+        if count == 0 {
+            return Ok(Value::Null);
+        }
+
+        Ok(Value::Float(sum / count as f64))
+    }
+
+    /// MIN aggregate function
+    fn aggregate_min(&self, args: &[Expression], rows: &[Row]) -> ExecutionResult<Value> {
+        if args.is_empty() {
+            return Err(ExecutionError::InvalidExpression(
+                "MIN requires an argument".to_string(),
+            ));
+        }
+
+        let arg = &args[0];
+        let mut min_value: Option<Value> = None;
+
+        for row in rows {
+            let value = self.evaluate_row_expression(arg, row)?;
+            if matches!(value, Value::Null) {
+                continue;
+            }
+
+            min_value = Some(match min_value {
+                None => value,
+                Some(current) => {
+                    if self.compare_values(&value, &current) == std::cmp::Ordering::Less {
+                        value
+                    } else {
+                        current
+                    }
+                }
+            });
+        }
+
+        Ok(min_value.unwrap_or(Value::Null))
+    }
+
+    /// MAX aggregate function
+    fn aggregate_max(&self, args: &[Expression], rows: &[Row]) -> ExecutionResult<Value> {
+        if args.is_empty() {
+            return Err(ExecutionError::InvalidExpression(
+                "MAX requires an argument".to_string(),
+            ));
+        }
+
+        let arg = &args[0];
+        let mut max_value: Option<Value> = None;
+
+        for row in rows {
+            let value = self.evaluate_row_expression(arg, row)?;
+            if matches!(value, Value::Null) {
+                continue;
+            }
+
+            max_value = Some(match max_value {
+                None => value,
+                Some(current) => {
+                    if self.compare_values(&value, &current) == std::cmp::Ordering::Greater {
+                        value
+                    } else {
+                        current
+                    }
+                }
+            });
+        }
+
+        Ok(max_value.unwrap_or(Value::Null))
+    }
+
+    /// Evaluate an expression for a single row
+    fn evaluate_row_expression(&self, expr: &Expression, row: &Row) -> ExecutionResult<Value> {
+        match expr {
+            Expression::Variable(var) => {
+                row.get(var)
+                    .cloned()
+                    .ok_or_else(|| ExecutionError::VariableNotFound(var.clone()))
+            }
+            Expression::Property(prop) => {
+                if let Some(value) = row.get(&prop.base) {
+                    self.get_property(value, &prop.properties)
+                } else {
+                    Err(ExecutionError::VariableNotFound(prop.base.clone()))
+                }
+            }
+            Expression::Literal(lit) => Ok(self.literal_to_value(lit)),
+            _ => Err(ExecutionError::UnsupportedOperation(
+                "Complex expressions in aggregates not yet supported".to_string(),
+            )),
+        }
     }
 
     /// Apply ORDER BY sorting to rows
@@ -704,5 +999,308 @@ mod tests {
         assert_eq!(rows[0].get("age"), Some(&Value::Integer(40)));
         assert_eq!(rows[1].get("age"), Some(&Value::Integer(35)));
         assert_eq!(rows[2].get("age"), Some(&Value::Integer(30)));
+    }
+
+    // ===== Aggregate Function Tests =====
+
+    #[test]
+    fn test_aggregate_count_all() {
+        let (executor, _temp) = create_test_executor();
+
+        let rows = vec![
+            Row::new().with_binding("n", Value::Integer(1)),
+            Row::new().with_binding("n", Value::Integer(2)),
+            Row::new().with_binding("n", Value::Integer(3)),
+        ];
+
+        // COUNT(*)
+        let result = executor.aggregate_count(&[], &rows).unwrap();
+        assert_eq!(result, Value::Integer(3));
+    }
+
+    #[test]
+    fn test_aggregate_count_expr() {
+        let (executor, _temp) = create_test_executor();
+
+        let rows = vec![
+            Row::new().with_binding("n", Value::Integer(1)),
+            Row::new().with_binding("n", Value::Null),
+            Row::new().with_binding("n", Value::Integer(3)),
+        ];
+
+        // COUNT(n) - should skip nulls
+        let result = executor.aggregate_count(
+            &[Expression::Variable("n".to_string())],
+            &rows,
+        ).unwrap();
+        assert_eq!(result, Value::Integer(2));
+    }
+
+    #[test]
+    fn test_aggregate_sum_integers() {
+        let (executor, _temp) = create_test_executor();
+
+        let rows = vec![
+            Row::new().with_binding("n", Value::Integer(10)),
+            Row::new().with_binding("n", Value::Integer(20)),
+            Row::new().with_binding("n", Value::Integer(30)),
+        ];
+
+        let result = executor.aggregate_sum(
+            &[Expression::Variable("n".to_string())],
+            &rows,
+        ).unwrap();
+        assert_eq!(result, Value::Integer(60));
+    }
+
+    #[test]
+    fn test_aggregate_sum_floats() {
+        let (executor, _temp) = create_test_executor();
+
+        let rows = vec![
+            Row::new().with_binding("n", Value::Float(1.5)),
+            Row::new().with_binding("n", Value::Float(2.5)),
+            Row::new().with_binding("n", Value::Float(3.0)),
+        ];
+
+        let result = executor.aggregate_sum(
+            &[Expression::Variable("n".to_string())],
+            &rows,
+        ).unwrap();
+        assert_eq!(result, Value::Float(7.0));
+    }
+
+    #[test]
+    fn test_aggregate_sum_with_nulls() {
+        let (executor, _temp) = create_test_executor();
+
+        let rows = vec![
+            Row::new().with_binding("n", Value::Integer(10)),
+            Row::new().with_binding("n", Value::Null),
+            Row::new().with_binding("n", Value::Integer(30)),
+        ];
+
+        let result = executor.aggregate_sum(
+            &[Expression::Variable("n".to_string())],
+            &rows,
+        ).unwrap();
+        assert_eq!(result, Value::Integer(40));
+    }
+
+    #[test]
+    fn test_aggregate_avg() {
+        let (executor, _temp) = create_test_executor();
+
+        let rows = vec![
+            Row::new().with_binding("n", Value::Integer(10)),
+            Row::new().with_binding("n", Value::Integer(20)),
+            Row::new().with_binding("n", Value::Integer(30)),
+        ];
+
+        let result = executor.aggregate_avg(
+            &[Expression::Variable("n".to_string())],
+            &rows,
+        ).unwrap();
+        assert_eq!(result, Value::Float(20.0));
+    }
+
+    #[test]
+    fn test_aggregate_avg_with_nulls() {
+        let (executor, _temp) = create_test_executor();
+
+        let rows = vec![
+            Row::new().with_binding("n", Value::Integer(10)),
+            Row::new().with_binding("n", Value::Null),
+            Row::new().with_binding("n", Value::Integer(20)),
+        ];
+
+        // AVG should skip nulls: (10 + 20) / 2 = 15
+        let result = executor.aggregate_avg(
+            &[Expression::Variable("n".to_string())],
+            &rows,
+        ).unwrap();
+        assert_eq!(result, Value::Float(15.0));
+    }
+
+    #[test]
+    fn test_aggregate_min_integers() {
+        let (executor, _temp) = create_test_executor();
+
+        let rows = vec![
+            Row::new().with_binding("n", Value::Integer(30)),
+            Row::new().with_binding("n", Value::Integer(10)),
+            Row::new().with_binding("n", Value::Integer(20)),
+        ];
+
+        let result = executor.aggregate_min(
+            &[Expression::Variable("n".to_string())],
+            &rows,
+        ).unwrap();
+        assert_eq!(result, Value::Integer(10));
+    }
+
+    #[test]
+    fn test_aggregate_min_strings() {
+        let (executor, _temp) = create_test_executor();
+
+        let rows = vec![
+            Row::new().with_binding("name", Value::String("Charlie".to_string())),
+            Row::new().with_binding("name", Value::String("Alice".to_string())),
+            Row::new().with_binding("name", Value::String("Bob".to_string())),
+        ];
+
+        let result = executor.aggregate_min(
+            &[Expression::Variable("name".to_string())],
+            &rows,
+        ).unwrap();
+        assert_eq!(result, Value::String("Alice".to_string()));
+    }
+
+    #[test]
+    fn test_aggregate_max_integers() {
+        let (executor, _temp) = create_test_executor();
+
+        let rows = vec![
+            Row::new().with_binding("n", Value::Integer(30)),
+            Row::new().with_binding("n", Value::Integer(10)),
+            Row::new().with_binding("n", Value::Integer(20)),
+        ];
+
+        let result = executor.aggregate_max(
+            &[Expression::Variable("n".to_string())],
+            &rows,
+        ).unwrap();
+        assert_eq!(result, Value::Integer(30));
+    }
+
+    #[test]
+    fn test_aggregate_max_with_nulls() {
+        let (executor, _temp) = create_test_executor();
+
+        let rows = vec![
+            Row::new().with_binding("n", Value::Integer(10)),
+            Row::new().with_binding("n", Value::Null),
+            Row::new().with_binding("n", Value::Integer(30)),
+        ];
+
+        // MAX should skip nulls
+        let result = executor.aggregate_max(
+            &[Expression::Variable("n".to_string())],
+            &rows,
+        ).unwrap();
+        assert_eq!(result, Value::Integer(30));
+    }
+
+    #[test]
+    fn test_aggregate_empty_rows() {
+        let (executor, _temp) = create_test_executor();
+
+        let rows: Vec<Row> = vec![];
+
+        // COUNT(*) of empty should be 0
+        let result = executor.aggregate_count(&[], &rows).unwrap();
+        assert_eq!(result, Value::Integer(0));
+
+        // SUM/AVG/MIN/MAX of empty should be NULL
+        let sum = executor.aggregate_sum(
+            &[Expression::Variable("n".to_string())],
+            &rows,
+        ).unwrap();
+        assert_eq!(sum, Value::Null);
+
+        let avg = executor.aggregate_avg(
+            &[Expression::Variable("n".to_string())],
+            &rows,
+        ).unwrap();
+        assert_eq!(avg, Value::Null);
+
+        let min = executor.aggregate_min(
+            &[Expression::Variable("n".to_string())],
+            &rows,
+        ).unwrap();
+        assert_eq!(min, Value::Null);
+
+        let max = executor.aggregate_max(
+            &[Expression::Variable("n".to_string())],
+            &rows,
+        ).unwrap();
+        assert_eq!(max, Value::Null);
+    }
+
+    #[test]
+    fn test_apply_return_with_count() {
+        let (executor, _temp) = create_test_executor();
+
+        let mut rows = vec![
+            Row::new().with_binding("n", Value::Integer(1)),
+            Row::new().with_binding("n", Value::Integer(2)),
+            Row::new().with_binding("n", Value::Integer(3)),
+        ];
+
+        // RETURN COUNT(*)
+        let return_clause = ReturnClause {
+            items: vec![ReturnItem {
+                expression: Expression::FunctionCall {
+                    name: "COUNT".to_string(),
+                    args: vec![],
+                },
+                alias: Some("count".to_string()),
+            }],
+            order_by: None,
+            limit: None,
+        };
+
+        executor.apply_return(&mut rows, &return_clause).unwrap();
+
+        // Should have single row with count
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("count"), Some(&Value::Integer(3)));
+    }
+
+    #[test]
+    fn test_apply_return_with_multiple_aggregates() {
+        let (executor, _temp) = create_test_executor();
+
+        let mut rows = vec![
+            Row::new().with_binding("age", Value::Integer(20)),
+            Row::new().with_binding("age", Value::Integer(30)),
+            Row::new().with_binding("age", Value::Integer(40)),
+        ];
+
+        // RETURN COUNT(*) AS cnt, SUM(age) AS total, AVG(age) AS average
+        let return_clause = ReturnClause {
+            items: vec![
+                ReturnItem {
+                    expression: Expression::FunctionCall {
+                        name: "COUNT".to_string(),
+                        args: vec![],
+                    },
+                    alias: Some("cnt".to_string()),
+                },
+                ReturnItem {
+                    expression: Expression::FunctionCall {
+                        name: "SUM".to_string(),
+                        args: vec![Expression::Variable("age".to_string())],
+                    },
+                    alias: Some("total".to_string()),
+                },
+                ReturnItem {
+                    expression: Expression::FunctionCall {
+                        name: "AVG".to_string(),
+                        args: vec![Expression::Variable("age".to_string())],
+                    },
+                    alias: Some("average".to_string()),
+                },
+            ],
+            order_by: None,
+            limit: None,
+        };
+
+        executor.apply_return(&mut rows, &return_clause).unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("cnt"), Some(&Value::Integer(3)));
+        assert_eq!(rows[0].get("total"), Some(&Value::Integer(90)));
+        assert_eq!(rows[0].get("average"), Some(&Value::Float(30.0)));
     }
 }
