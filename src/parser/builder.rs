@@ -36,6 +36,7 @@ fn build_query(pair: Pair<Rule>) -> ParseResult<CypherQuery> {
         .ok_or_else(|| ParseError::InvalidSyntax("Empty query body".into()))?;
 
     match first.as_rule() {
+        Rule::with_query => build_with_query(first),
         Rule::read_query => build_read_query(first),
         Rule::write_query => build_write_query(first),
         Rule::mixed_query => build_mixed_query(first),
@@ -137,6 +138,55 @@ fn build_mixed_query(pair: Pair<Rule>) -> ParseResult<CypherQuery> {
             ParseError::InvalidSyntax("Write clause required in mixed query".into())
         })?,
         return_clause,
+    })
+}
+
+fn build_with_query(pair: Pair<Rule>) -> ParseResult<CypherQuery> {
+    let mut match_clause = None;
+    let mut where_clause = None;
+    let mut with_clause = None;
+    let mut with_where = None;
+    let mut return_clause = None;
+
+    let mut found_with = false;
+
+    for inner_pair in pair.into_inner() {
+        match inner_pair.as_rule() {
+            Rule::match_clause => {
+                match_clause = Some(build_match_clause(inner_pair)?);
+            }
+            Rule::where_clause => {
+                if found_with {
+                    // This is the WHERE after WITH
+                    with_where = Some(build_where_clause(inner_pair)?);
+                } else {
+                    // This is the WHERE before WITH
+                    where_clause = Some(build_where_clause(inner_pair)?);
+                }
+            }
+            Rule::with_clause => {
+                with_clause = Some(build_with_clause(inner_pair)?);
+                found_with = true;
+            }
+            Rule::return_clause => {
+                return_clause = Some(build_return_clause(inner_pair)?);
+            }
+            _ => {}
+        }
+    }
+
+    Ok(CypherQuery::WithQuery {
+        match_clause: match_clause.ok_or_else(|| {
+            ParseError::InvalidSyntax("MATCH clause required in WITH query".into())
+        })?,
+        where_clause,
+        with_clause: with_clause.ok_or_else(|| {
+            ParseError::InvalidSyntax("WITH clause required in WITH query".into())
+        })?,
+        with_where,
+        return_clause: return_clause.ok_or_else(|| {
+            ParseError::InvalidSyntax("RETURN clause required in WITH query".into())
+        })?,
     })
 }
 
@@ -242,6 +292,33 @@ fn build_return_clause(pair: Pair<Rule>) -> ParseResult<ReturnClause> {
     })
 }
 
+fn build_with_clause(pair: Pair<Rule>) -> ParseResult<WithClause> {
+    let mut items = Vec::new();
+    let mut order_by = None;
+    let mut limit = None;
+
+    for inner_pair in pair.into_inner() {
+        match inner_pair.as_rule() {
+            Rule::return_item => {
+                items.push(build_return_item(inner_pair)?);
+            }
+            Rule::order_by => {
+                order_by = Some(build_order_by(inner_pair)?);
+            }
+            Rule::limit => {
+                limit = Some(build_limit(inner_pair)?);
+            }
+            _ => {}
+        }
+    }
+
+    Ok(WithClause {
+        items,
+        order_by,
+        limit,
+    })
+}
+
 fn build_return_item(pair: Pair<Rule>) -> ParseResult<ReturnItem> {
     let mut inner = pair.into_inner();
 
@@ -264,21 +341,26 @@ fn build_order_by(pair: Pair<Rule>) -> ParseResult<Vec<SortItem>> {
 }
 
 fn build_sort_item(pair: Pair<Rule>) -> ParseResult<SortItem> {
-    let mut inner = pair.into_inner();
+    let mut expression = None;
+    let mut ascending = true; // Default to ascending
 
-    let expression = build_expression(
-        inner
-            .next()
-            .ok_or_else(|| ParseError::InvalidSyntax("Missing expression in sort item".into()))?,
-    )?;
-
-    let ascending = inner
-        .next()
-        .map(|p| p.as_str().to_uppercase() != "DESC")
-        .unwrap_or(true);
+    for inner_pair in pair.into_inner() {
+        match inner_pair.as_rule() {
+            Rule::sort_direction => {
+                let direction = inner_pair.as_str().to_uppercase();
+                ascending = direction != "DESC";
+            }
+            _ => {
+                // This should be the expression
+                expression = Some(build_expression(inner_pair)?);
+            }
+        }
+    }
 
     Ok(SortItem {
-        expression,
+        expression: expression.ok_or_else(|| {
+            ParseError::InvalidSyntax("Missing expression in sort item".into())
+        })?,
         ascending,
     })
 }

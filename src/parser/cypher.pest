@@ -11,7 +11,8 @@ COMMENT = _{ "/*" ~ (!"*/" ~ ANY)* ~ "*/" | "//" ~ (!"\n" ~ ANY)* }
 cypher_query = { SOI ~ query ~ ";"? ~ EOI }
 
 query = {
-    read_query
+    with_query
+  | read_query
   | write_query
   | mixed_query
 }
@@ -29,6 +30,10 @@ write_query = {
 mixed_query = {
     match_clause ~ where_clause? ~ (create_clause | delete_clause | set_clause)
   | match_clause ~ where_clause? ~ set_clause ~ return_clause?
+}
+
+with_query = {
+    match_clause ~ where_clause? ~ with_clause ~ where_clause? ~ return_clause
 }
 
 // ===== MATCH Clause =====
@@ -49,6 +54,10 @@ set_clause = { ^"SET" ~ set_item ~ ("," ~ set_item)* }
 
 set_item = { property_expression ~ "=" ~ expression }
 
+// ===== WITH Clause =====
+
+with_clause = { ^"WITH" ~ return_item ~ ("," ~ return_item)* ~ order_by? ~ limit? }
+
 // ===== RETURN Clause =====
 
 return_clause = { ^"RETURN" ~ return_item ~ ("," ~ return_item)* ~ order_by? ~ limit? }
@@ -57,7 +66,9 @@ return_item = { expression ~ (^"AS" ~ identifier)? }
 
 order_by = { ^"ORDER" ~ ^"BY" ~ sort_item ~ ("," ~ sort_item)* }
 
-sort_item = { expression ~ (^"ASC" | ^"DESC")? }
+sort_item = { expression ~ sort_direction? }
+
+sort_direction = { ^"ASC" | ^"DESC" }
 
 limit = { ^"LIMIT" ~ integer }
 
@@ -113,7 +124,7 @@ comparison_expression = {
 }
 
 comparison_op = {
-    "=" | "<>" | "!=" | "<" | ">" | "<=" | ">="
+    "<=" | ">=" | "<>" | "!=" | "=" | "<" | ">"
 }
 
 additive_expression = {

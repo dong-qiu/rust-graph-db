@@ -25,6 +25,15 @@ pub enum CypherQuery {
         write_clause: WriteClause,
         return_clause: Option<ReturnClause>,
     },
+
+    /// Query with WITH clause: MATCH ... WITH ... RETURN ...
+    WithQuery {
+        match_clause: MatchClause,
+        where_clause: Option<WhereClause>,
+        with_clause: WithClause,
+        with_where: Option<WhereClause>,
+        return_clause: ReturnClause,
+    },
 }
 
 /// MATCH clause
@@ -52,6 +61,15 @@ pub struct ReturnClause {
 pub struct ReturnItem {
     pub expression: Expression,
     pub alias: Option<String>,
+}
+
+/// WITH clause
+/// Similar to RETURN but for intermediate results
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WithClause {
+    pub items: Vec<ReturnItem>,
+    pub order_by: Option<Vec<SortItem>>,
+    pub limit: Option<i64>,
 }
 
 /// Sort item (ORDER BY)
@@ -220,6 +238,7 @@ impl CypherQuery {
             CypherQuery::Read { .. } => true,
             CypherQuery::Mixed { return_clause, .. } => return_clause.is_some(),
             CypherQuery::Write(_) => false,
+            CypherQuery::WithQuery { .. } => true,
         }
     }
 }

@@ -233,6 +233,33 @@ impl QueryExecutor {
                     Ok(vec![])
                 }
             }
+
+            CypherQuery::WithQuery {
+                match_clause,
+                where_clause,
+                with_clause,
+                with_where,
+                return_clause,
+            } => {
+                // Execute MATCH with optional WHERE
+                let match_executor = MatchExecutor::new(self.storage.clone());
+                let mut rows = match_executor
+                    .execute(&match_clause, where_clause.as_ref())
+                    .await?;
+
+                // Apply WITH projection (similar to RETURN)
+                self.apply_with(&mut rows, &with_clause)?;
+
+                // Apply WHERE after WITH (if present)
+                if let Some(where_clause) = with_where {
+                    self.apply_where_filter(&mut rows, &where_clause)?;
+                }
+
+                // Apply final RETURN projection
+                self.apply_return(&mut rows, &return_clause)?;
+
+                Ok(rows)
+            }
         }
     }
 
@@ -301,6 +328,238 @@ impl QueryExecutor {
         }
 
         Ok(())
+    }
+
+    fn apply_with(
+        &self,
+        rows: &mut Vec<Row>,
+        with_clause: &WithClause,
+    ) -> ExecutionResult<()> {
+        // WITH clause is similar to RETURN but for intermediate results
+        // Check if any with item contains an aggregate function
+        let has_aggregates = with_clause.items.iter().any(|item| {
+            self.contains_aggregate(&item.expression)
+        });
+
+        if has_aggregates {
+            // Aggregate mode: compute aggregates over all rows
+            let aggregated_row = self.compute_aggregates(rows, &with_clause.items)?;
+            rows.clear();
+            rows.push(aggregated_row);
+        } else {
+            // Normal mode: Apply projection (filter bindings)
+            for row in rows.iter_mut() {
+                let mut new_bindings = HashMap::new();
+
+                for item in &with_clause.items {
+                    match &item.expression {
+                        Expression::Variable(var) => {
+                            if let Some(value) = row.get(var) {
+                                let key = item.alias.clone().unwrap_or_else(|| var.clone());
+                                new_bindings.insert(key, value.clone());
+                            }
+                        }
+                        Expression::Property(prop) => {
+                            // Handle property access like n.name
+                            if let Some(value) = row.get(&prop.base) {
+                                let prop_value = self.get_property(value, &prop.properties)?;
+                                let key = item
+                                    .alias
+                                    .clone()
+                                    .unwrap_or_else(|| format!("{}.{}", prop.base, prop.properties.join(".")));
+                                new_bindings.insert(key, prop_value);
+                            }
+                        }
+                        Expression::FunctionCall { name, args } => {
+                            // Evaluate function (like count(friend))
+                            let result = self.evaluate_function_in_with(name, args, row)?;
+                            let key = item.alias.clone().unwrap_or_else(|| {
+                                format!("{}({})", name,
+                                    args.iter()
+                                        .map(|e| format!("{:?}", e))
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                )
+                            });
+                            new_bindings.insert(key, result);
+                        }
+                        _ => {
+                            // TODO: Evaluate complex expressions
+                            return Err(ExecutionError::UnsupportedOperation(
+                                "Complex expressions in WITH".to_string(),
+                            ));
+                        }
+                    }
+                }
+
+                row.bindings = new_bindings;
+            }
+
+            // Apply ORDER BY (only for non-aggregate queries)
+            if let Some(sort_items) = &with_clause.order_by {
+                self.apply_order_by(rows, sort_items)?;
+            }
+
+            // Apply LIMIT
+            if let Some(limit) = with_clause.limit {
+                if limit >= 0 {
+                    rows.truncate(limit as usize);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn apply_where_filter(
+        &self,
+        rows: &mut Vec<Row>,
+        where_clause: &WhereClause,
+    ) -> ExecutionResult<()> {
+        // Filter rows based on WHERE condition
+        rows.retain(|row| {
+            match self.evaluate_where_condition(&where_clause.condition, row) {
+                Ok(true) => true,
+                _ => false,
+            }
+        });
+        Ok(())
+    }
+
+    fn evaluate_where_condition(
+        &self,
+        expr: &Expression,
+        row: &Row,
+    ) -> ExecutionResult<bool> {
+        match expr {
+            Expression::Variable(var) => {
+                if let Some(value) = row.get(var) {
+                    Ok(self.is_truthy(value))
+                } else {
+                    Ok(false)
+                }
+            }
+            Expression::BinaryOp { left, op, right } => {
+                // Evaluate comparison operations
+                match op {
+                    BinaryOperator::Eq
+                    | BinaryOperator::Neq
+                    | BinaryOperator::Lt
+                    | BinaryOperator::Gt
+                    | BinaryOperator::Lte
+                    | BinaryOperator::Gte => {
+                        let left_val = self.evaluate_expression_in_where(left, row)?;
+                        let right_val = self.evaluate_expression_in_where(right, row)?;
+                        self.compare_values_for_where(&left_val, op, &right_val)
+                    }
+                    BinaryOperator::And => {
+                        let left_result = self.evaluate_where_condition(left, row)?;
+                        if !left_result {
+                            return Ok(false);
+                        }
+                        self.evaluate_where_condition(right, row)
+                    }
+                    BinaryOperator::Or => {
+                        let left_result = self.evaluate_where_condition(left, row)?;
+                        if left_result {
+                            return Ok(true);
+                        }
+                        self.evaluate_where_condition(right, row)
+                    }
+                    _ => Err(ExecutionError::UnsupportedOperation(format!(
+                        "Operator {:?} not supported in WHERE",
+                        op
+                    ))),
+                }
+            }
+            Expression::UnaryOp { op, expr } => {
+                if matches!(op, UnaryOperator::Not) {
+                    Ok(!self.evaluate_where_condition(expr, row)?)
+                } else {
+                    Err(ExecutionError::UnsupportedOperation(
+                        "Only NOT operator supported in WHERE".to_string(),
+                    ))
+                }
+            }
+            _ => Err(ExecutionError::UnsupportedOperation(
+                "Expression type not supported in WHERE".to_string(),
+            )),
+        }
+    }
+
+    fn evaluate_expression_in_where(
+        &self,
+        expr: &Expression,
+        row: &Row,
+    ) -> ExecutionResult<Value> {
+        match expr {
+            Expression::Variable(var) => {
+                row.get(var).cloned().ok_or_else(|| {
+                    ExecutionError::VariableNotFound(var.clone())
+                })
+            }
+            Expression::Property(prop) => {
+                if let Some(value) = row.get(&prop.base) {
+                    self.get_property(value, &prop.properties)
+                } else {
+                    Err(ExecutionError::VariableNotFound(prop.base.clone()))
+                }
+            }
+            Expression::Literal(lit) => {
+                Ok(self.literal_to_value(lit))
+            }
+            _ => Err(ExecutionError::UnsupportedOperation(
+                "Complex expressions not yet supported in WHERE".to_string(),
+            )),
+        }
+    }
+
+    fn is_truthy(&self, value: &Value) -> bool {
+        match value {
+            Value::Null => false,
+            Value::Boolean(b) => *b,
+            Value::Integer(i) => *i != 0,
+            Value::Float(f) => *f != 0.0,
+            Value::String(s) => !s.is_empty(),
+            _ => true,
+        }
+    }
+
+    fn compare_values_for_where(
+        &self,
+        left: &Value,
+        op: &BinaryOperator,
+        right: &Value,
+    ) -> ExecutionResult<bool> {
+        use std::cmp::Ordering;
+
+        let cmp = self.compare_values(left, right);
+
+        Ok(match op {
+            BinaryOperator::Eq => cmp == Ordering::Equal,
+            BinaryOperator::Neq => cmp != Ordering::Equal,
+            BinaryOperator::Lt => cmp == Ordering::Less,
+            BinaryOperator::Gt => cmp == Ordering::Greater,
+            BinaryOperator::Lte => cmp != Ordering::Greater,
+            BinaryOperator::Gte => cmp != Ordering::Less,
+            _ => {
+                return Err(ExecutionError::UnsupportedOperation(format!(
+                    "Operator {:?} not supported in WHERE",
+                    op
+                )))
+            }
+        })
+    }
+
+    fn evaluate_function_in_with(
+        &self,
+        _name: &str,
+        _args: &[Expression],
+        _row: &Row,
+    ) -> ExecutionResult<Value> {
+        // For now, just return null
+        // TODO: Implement function evaluation (like count())
+        Ok(Value::Null)
     }
 
     /// Check if an expression contains an aggregate function

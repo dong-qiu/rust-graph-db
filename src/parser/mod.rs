@@ -144,6 +144,52 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_with_clause() {
+        let query = "MATCH (p:Person) WITH p, p.age AS age RETURN p.name, age;";
+        let result = parse_cypher(query);
+        assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+
+        if let Ok(CypherQuery::WithQuery {
+            with_clause,
+            return_clause,
+            ..
+        }) = result
+        {
+            assert_eq!(with_clause.items.len(), 2);
+            assert_eq!(return_clause.items.len(), 2);
+        } else {
+            panic!("Expected WithQuery");
+        }
+    }
+
+    #[test]
+    fn test_parse_with_where() {
+        let query = "MATCH (p:Person) WITH p, p.age AS age WHERE age > 25 RETURN p.name;";
+        let result = parse_cypher(query);
+        assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+
+        if let Ok(CypherQuery::WithQuery { with_where, .. }) = result {
+            assert!(with_where.is_some());
+        } else {
+            panic!("Expected WithQuery with WHERE after WITH");
+        }
+    }
+
+    #[test]
+    fn test_parse_with_order_limit() {
+        let query = "MATCH (p:Person) WITH p, p.age AS age ORDER BY age LIMIT 10 RETURN p;";
+        let result = parse_cypher(query);
+        assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+
+        if let Ok(CypherQuery::WithQuery { with_clause, .. }) = result {
+            assert!(with_clause.order_by.is_some());
+            assert_eq!(with_clause.limit, Some(10));
+        } else {
+            panic!("Expected WithQuery");
+        }
+    }
+
+    #[test]
     fn test_parse_invalid_query() {
         let query = "INVALID QUERY";
         let result = parse_cypher(query);
