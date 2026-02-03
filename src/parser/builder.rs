@@ -656,22 +656,32 @@ fn build_function_call(pair: Pair<Rule>) -> ParseResult<Expression> {
 }
 
 fn build_property_expression(pair: Pair<Rule>) -> ParseResult<PropertyExpression> {
-    let mut parts: Vec<String> = Vec::new();
+    let mut base: Option<String> = None;
+    let mut properties: Vec<String> = Vec::new();
 
     for inner_pair in pair.into_inner() {
-        if inner_pair.as_rule() == Rule::identifier {
-            parts.push(inner_pair.as_str().to_string());
+        match inner_pair.as_rule() {
+            Rule::identifier => {
+                // First identifier is the base
+                if base.is_none() {
+                    base = Some(inner_pair.as_str().to_string());
+                }
+            }
+            Rule::property_lookup => {
+                // Extract identifier from property_lookup
+                for lookup_inner in inner_pair.into_inner() {
+                    if lookup_inner.as_rule() == Rule::identifier {
+                        properties.push(lookup_inner.as_str().to_string());
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
-    if parts.is_empty() {
-        return Err(ParseError::InvalidSyntax(
-            "Empty property expression".into(),
-        ));
-    }
-
-    let base = parts.remove(0);
-    let properties = parts;
+    let base = base.ok_or_else(|| ParseError::InvalidSyntax(
+        "Property expression must have a base identifier".into(),
+    ))?;
 
     Ok(PropertyExpression { base, properties })
 }

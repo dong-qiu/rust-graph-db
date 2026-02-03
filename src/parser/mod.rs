@@ -112,6 +112,38 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_set_nested_property() {
+        let query = "MATCH (n:Person) SET n.address.city = 'Shanghai';";
+        let result = parse_cypher(query);
+        assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+
+        if let Ok(CypherQuery::Mixed { write_clause: WriteClause::Set { items }, .. }) = result {
+            assert_eq!(items.len(), 1);
+            let item = &items[0];
+            assert_eq!(item.property.base, "n");
+            assert_eq!(item.property.properties, vec!["address", "city"]);
+        } else {
+            panic!("Expected Mixed query with SET clause");
+        }
+    }
+
+    #[test]
+    fn test_parse_set_deep_nested_property() {
+        let query = "MATCH (n:Person) SET n.contact.address.city = 'Beijing';";
+        let result = parse_cypher(query);
+        assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+
+        if let Ok(CypherQuery::Mixed { write_clause: WriteClause::Set { items }, .. }) = result {
+            assert_eq!(items.len(), 1);
+            let item = &items[0];
+            assert_eq!(item.property.base, "n");
+            assert_eq!(item.property.properties, vec!["contact", "address", "city"]);
+        } else {
+            panic!("Expected Mixed query with SET clause");
+        }
+    }
+
+    #[test]
     fn test_parse_invalid_query() {
         let query = "INVALID QUERY";
         let result = parse_cypher(query);

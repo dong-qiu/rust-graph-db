@@ -34,93 +34,121 @@ impl SetExecutor {
         let mut tx = self.storage.begin_transaction().await?;
 
         for row in rows {
-            for item in items {
-                self.apply_set_item(&mut tx, item, row).await?;
-            }
+            // Group SET operations by entity to handle multiple updates to the same entity correctly
+            self.apply_set_items_for_row(&mut tx, items, row).await?;
         }
 
         tx.commit().await?;
         Ok(())
     }
 
-    async fn apply_set_item(
+    /// Apply all SET items for a single row, grouping updates by entity
+    async fn apply_set_items_for_row(
         &self,
         tx: &mut Box<dyn crate::storage::GraphTransaction>,
-        item: &SetItem,
+        items: &[SetItem],
         row: &Row,
     ) -> ExecutionResult<()> {
-        let prop_expr = &item.property;
-        let value_expr = &item.value;
+        use std::collections::HashMap;
 
-        // Get the entity (vertex or edge)
-        let entity_var = &prop_expr.base;
-        let entity_value = row
-            .get(entity_var)
-            .ok_or_else(|| ExecutionError::VariableNotFound(entity_var.clone()))?;
+        // Group items by entity (vertex or edge ID)
+        let mut vertex_updates: HashMap<Graphid, Vec<(&[String], serde_json::Value)>> =
+            HashMap::new();
+        let mut edge_updates: HashMap<Graphid, Vec<(&[String], serde_json::Value)>> =
+            HashMap::new();
 
-        // Evaluate the new value
-        let new_value = self.evaluate_expression(value_expr, row)?;
+        for item in items {
+            let prop_expr = &item.property;
+            let value_expr = &item.value;
 
-        // Update the entity
-        match entity_value {
-            Value::Vertex(v) => {
-                self.update_vertex_property(tx, v.id, &prop_expr.properties, new_value)
-                    .await?;
+            // Get the entity (vertex or edge)
+            let entity_var = &prop_expr.base;
+            let entity_value = row
+                .get(entity_var)
+                .ok_or_else(|| ExecutionError::VariableNotFound(entity_var.clone()))?;
+
+            // Evaluate the new value
+            let new_value = self.evaluate_expression(value_expr, row)?;
+
+            // Group by entity type and ID
+            match entity_value {
+                Value::Vertex(v) => {
+                    vertex_updates
+                        .entry(v.id)
+                        .or_insert_with(Vec::new)
+                        .push((&prop_expr.properties[..], new_value));
+                }
+                Value::Edge(e) => {
+                    edge_updates
+                        .entry(e.id)
+                        .or_insert_with(Vec::new)
+                        .push((&prop_expr.properties[..], new_value));
+                }
+                _ => {
+                    return Err(ExecutionError::TypeMismatch {
+                        expected: "Vertex or Edge".to_string(),
+                        actual: format!("{:?}", entity_value),
+                    });
+                }
             }
-            Value::Edge(e) => {
-                self.update_edge_property(tx, e.id, &prop_expr.properties, new_value)
-                    .await?;
-            }
-            _ => {
-                return Err(ExecutionError::TypeMismatch {
-                    expected: "Vertex or Edge".to_string(),
-                    actual: format!("{:?}", entity_value),
-                });
-            }
+        }
+
+        // Apply all updates for each vertex
+        for (id, updates) in vertex_updates {
+            self.update_vertex_properties_batch(tx, id, &updates).await?;
+        }
+
+        // Apply all updates for each edge
+        for (id, updates) in edge_updates {
+            self.update_edge_properties_batch(tx, id, &updates).await?;
         }
 
         Ok(())
     }
 
-    async fn update_vertex_property(
+    /// Update multiple properties of a vertex in a single read-modify-write cycle
+    async fn update_vertex_properties_batch(
         &self,
         tx: &mut Box<dyn crate::storage::GraphTransaction>,
         id: Graphid,
-        properties: &[String],
-        value: serde_json::Value,
+        updates: &[(&[String], serde_json::Value)],
     ) -> ExecutionResult<()> {
-        // Get current vertex
+        // Get current vertex once
         let mut vertex = tx
             .get_vertex(id)
             .await?
             .ok_or_else(|| ExecutionError::InvalidExpression("Vertex not found".to_string()))?;
 
-        // Update property
-        self.set_nested_property(&mut vertex.properties, properties, value)?;
+        // Apply all updates to the properties
+        for (properties, value) in updates {
+            self.set_nested_property(&mut vertex.properties, properties, value.clone())?;
+        }
 
-        // Save back
+        // Save back once
         tx.update_vertex(id, vertex.properties).await?;
 
         Ok(())
     }
 
-    async fn update_edge_property(
+    /// Update multiple properties of an edge in a single read-modify-write cycle
+    async fn update_edge_properties_batch(
         &self,
         tx: &mut Box<dyn crate::storage::GraphTransaction>,
         id: Graphid,
-        properties: &[String],
-        value: serde_json::Value,
+        updates: &[(&[String], serde_json::Value)],
     ) -> ExecutionResult<()> {
-        // Get current edge
+        // Get current edge once
         let mut edge = tx
             .get_edge(id)
             .await?
             .ok_or_else(|| ExecutionError::InvalidExpression("Edge not found".to_string()))?;
 
-        // Update property
-        self.set_nested_property(&mut edge.properties, properties, value)?;
+        // Apply all updates to the properties
+        for (properties, value) in updates {
+            self.set_nested_property(&mut edge.properties, properties, value.clone())?;
+        }
 
-        // Save back
+        // Save back once
         tx.update_edge(id, edge.properties).await?;
 
         Ok(())
@@ -452,5 +480,80 @@ mod tests {
         // Verify update
         let updated = storage.get_vertex(vertex.id).await.unwrap().unwrap();
         assert_eq!(updated.properties["age"], 31);
+    }
+
+    #[tokio::test]
+    async fn test_set_nested_property() {
+        let (storage, _temp) = setup_test_storage().await;
+
+        // Create vertex with nested properties
+        let mut tx = storage.begin_transaction().await.unwrap();
+        let vertex = tx
+            .create_vertex(
+                "Person",
+                serde_json::json!({
+                    "name": "Alice",
+                    "address": {
+                        "city": "Beijing",
+                        "country": "China"
+                    }
+                }),
+            )
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        // SET n.address.city = "Shanghai"
+        let mut executor = SetExecutor::new(storage.clone());
+        let row = Row::new().with_binding("n".to_string(), Value::Vertex(vertex.clone()));
+
+        let set_item = SetItem {
+            property: PropertyExpression {
+                base: "n".to_string(),
+                properties: vec!["address".to_string(), "city".to_string()],
+            },
+            value: Expression::Literal(Literal::String("Shanghai".to_string())),
+        };
+
+        executor
+            .execute_with_context(&[set_item], &[row])
+            .await
+            .unwrap();
+
+        // Verify update
+        let updated = storage.get_vertex(vertex.id).await.unwrap().unwrap();
+        assert_eq!(updated.properties["address"]["city"], "Shanghai");
+        assert_eq!(updated.properties["address"]["country"], "China");
+        assert_eq!(updated.properties["name"], "Alice");
+    }
+
+    #[tokio::test]
+    async fn test_set_nested_property_nonexistent() {
+        let (storage, _temp) = setup_test_storage().await;
+
+        // Create vertex without nested structure
+        let mut tx = storage.begin_transaction().await.unwrap();
+        let vertex = tx
+            .create_vertex("Person", serde_json::json!({"name": "Bob"}))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        // Try to SET n.address.city when address doesn't exist
+        let mut executor = SetExecutor::new(storage.clone());
+        let row = Row::new().with_binding("n".to_string(), Value::Vertex(vertex.clone()));
+
+        let set_item = SetItem {
+            property: PropertyExpression {
+                base: "n".to_string(),
+                properties: vec!["address".to_string(), "city".to_string()],
+            },
+            value: Expression::Literal(Literal::String("Shanghai".to_string())),
+        };
+
+        let result = executor.execute_with_context(&[set_item], &[row]).await;
+
+        // This should fail because address doesn't exist
+        assert!(result.is_err());
     }
 }
