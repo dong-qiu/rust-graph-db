@@ -755,6 +755,7 @@ mod tests {
 
         let match_clause = MatchClause {
             patterns: vec![pattern],
+            optional: false,
         };
 
         let results = executor.execute(&match_clause, None).await.unwrap();
@@ -793,6 +794,7 @@ mod tests {
 
         let match_clause = MatchClause {
             patterns: vec![pattern],
+            optional: false,
         };
 
         let results = executor.execute(&match_clause, None).await.unwrap();
@@ -828,6 +830,7 @@ mod tests {
 
         let match_clause = MatchClause {
             patterns: vec![pattern],
+            optional: false,
         };
 
         // WHERE p.age > 28
@@ -872,6 +875,7 @@ mod tests {
 
         let match_clause = MatchClause {
             patterns: vec![pattern],
+            optional: false,
         };
 
         // WHERE p.name = 'Alice'
@@ -919,6 +923,7 @@ mod tests {
 
         let match_clause = MatchClause {
             patterns: vec![pattern],
+            optional: false,
         };
 
         // WHERE p.age = 30 AND p.city = 'Beijing'
@@ -977,6 +982,7 @@ mod tests {
 
         let match_clause = MatchClause {
             patterns: vec![pattern],
+            optional: false,
         };
 
         // WHERE p.age < 26 OR p.age > 34
@@ -1032,6 +1038,7 @@ mod tests {
 
         let match_clause = MatchClause {
             patterns: vec![pattern],
+            optional: false,
         };
 
         // WHERE NOT p.active

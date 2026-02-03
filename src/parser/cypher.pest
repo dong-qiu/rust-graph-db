@@ -18,7 +18,7 @@ query = {
 }
 
 read_query = {
-    match_clause ~ where_clause? ~ return_clause
+    (match_clause | optional_match_clause)+ ~ where_clause? ~ return_clause
 }
 
 write_query = {
@@ -39,6 +39,8 @@ with_query = {
 // ===== MATCH Clause =====
 
 match_clause = { ^"MATCH" ~ pattern ~ ("," ~ pattern)* }
+
+optional_match_clause = { ^"OPTIONAL" ~ ^"MATCH" ~ pattern ~ ("," ~ pattern)* }
 
 // ===== CREATE Clause =====
 

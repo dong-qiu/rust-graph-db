@@ -136,6 +136,10 @@ impl Row {
     pub fn insert(&mut self, name: impl Into<String>, value: Value) {
         self.bindings.insert(name.into(), value);
     }
+
+    pub fn extend(&mut self, other: Row) {
+        self.bindings.extend(other.bindings);
+    }
 }
 
 /// Query executor
@@ -152,14 +156,39 @@ impl QueryExecutor {
     pub async fn execute(&self, query: CypherQuery) -> ExecutionResult<Vec<Row>> {
         match query {
             CypherQuery::Read {
-                match_clause,
+                match_clauses,
                 where_clause,
                 return_clause,
             } => {
                 let match_executor = MatchExecutor::new(self.storage.clone());
-                let mut rows = match_executor
-                    .execute(&match_clause, where_clause.as_ref())
-                    .await?;
+
+                // Execute match clauses with OPTIONAL MATCH support
+                let mut rows = if match_clauses.is_empty() {
+                    Vec::new()
+                } else {
+                    // Execute first match clause to get initial rows
+                    let mut result = match_executor
+                        .execute(&match_clauses[0], None)
+                        .await?;
+
+                    // Process remaining match clauses
+                    for match_clause in &match_clauses[1..] {
+                        if match_clause.optional {
+                            // OPTIONAL MATCH: LEFT JOIN semantics
+                            result = self.apply_optional_match(result, match_clause, &match_executor).await?;
+                        } else {
+                            // Regular MATCH: INNER JOIN semantics
+                            result = self.apply_match(result, match_clause, &match_executor).await?;
+                        }
+                    }
+
+                    result
+                };
+
+                // Apply WHERE filter
+                if let Some(where_clause) = where_clause.as_ref() {
+                    self.apply_where_filter(&mut rows, where_clause)?;
+                }
 
                 // Apply RETURN projection
                 self.apply_return(&mut rows, &return_clause)?;
@@ -976,6 +1005,7 @@ impl QueryExecutor {
 
     fn get_property(&self, value: &Value, properties: &[String]) -> ExecutionResult<Value> {
         match value {
+            Value::Null => Ok(Value::Null), // Property access on NULL returns NULL
             Value::Vertex(v) => {
                 let json = &v.properties;
                 self.extract_json_property(json, properties)
@@ -1030,6 +1060,87 @@ impl QueryExecutor {
                     .collect(),
             ),
         }
+    }
+
+    /// Apply a regular MATCH clause with INNER JOIN semantics
+    async fn apply_match(
+        &self,
+        existing_rows: Vec<Row>,
+        match_clause: &MatchClause,
+        match_executor: &MatchExecutor,
+    ) -> ExecutionResult<Vec<Row>> {
+        let mut result = Vec::new();
+
+        for existing_row in existing_rows {
+            // Execute the match clause
+            let new_rows = match_executor.execute(match_clause, None).await?;
+
+            // INNER JOIN: combine existing row with each matching new row
+            for new_row in new_rows {
+                let mut combined = existing_row.clone();
+                combined.extend(new_row);
+                result.push(combined);
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Apply an OPTIONAL MATCH clause with LEFT JOIN semantics
+    async fn apply_optional_match(
+        &self,
+        existing_rows: Vec<Row>,
+        match_clause: &MatchClause,
+        match_executor: &MatchExecutor,
+    ) -> ExecutionResult<Vec<Row>> {
+        let mut result = Vec::new();
+
+        for existing_row in existing_rows {
+            // Execute the match clause
+            let new_rows = match_executor.execute(match_clause, None).await?;
+
+            if new_rows.is_empty() {
+                // LEFT JOIN: No match found, preserve existing row with NULL for new variables
+                // Extract variable names from the match clause patterns
+                let null_row = self.create_null_row_for_pattern(match_clause);
+                let mut combined = existing_row.clone();
+                combined.extend(null_row);
+                result.push(combined);
+            } else {
+                // LEFT JOIN: Combine existing row with each matching new row
+                for new_row in new_rows {
+                    let mut combined = existing_row.clone();
+                    combined.extend(new_row);
+                    result.push(combined);
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Create a row with NULL values for all variables in a pattern
+    fn create_null_row_for_pattern(&self, match_clause: &MatchClause) -> Row {
+        let mut row = Row::new();
+
+        for pattern in &match_clause.patterns {
+            for element in &pattern.elements {
+                match element {
+                    PatternElement::Node(node) => {
+                        if let Some(var) = &node.variable {
+                            row.insert(var.clone(), Value::Null);
+                        }
+                    }
+                    PatternElement::Edge(edge) => {
+                        if let Some(var) = &edge.variable {
+                            row.insert(var.clone(), Value::Null);
+                        }
+                    }
+                }
+            }
+        }
+
+        row
     }
 }
 

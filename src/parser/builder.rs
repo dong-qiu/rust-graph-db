@@ -48,14 +48,17 @@ fn build_query(pair: Pair<Rule>) -> ParseResult<CypherQuery> {
 }
 
 fn build_read_query(pair: Pair<Rule>) -> ParseResult<CypherQuery> {
-    let mut match_clause = None;
+    let mut match_clauses = Vec::new();
     let mut where_clause = None;
     let mut return_clause = None;
 
     for inner_pair in pair.into_inner() {
         match inner_pair.as_rule() {
             Rule::match_clause => {
-                match_clause = Some(build_match_clause(inner_pair)?);
+                match_clauses.push(build_match_clause(inner_pair, false)?);
+            }
+            Rule::optional_match_clause => {
+                match_clauses.push(build_match_clause(inner_pair, true)?);
             }
             Rule::where_clause => {
                 where_clause = Some(build_where_clause(inner_pair)?);
@@ -67,10 +70,14 @@ fn build_read_query(pair: Pair<Rule>) -> ParseResult<CypherQuery> {
         }
     }
 
+    if match_clauses.is_empty() {
+        return Err(ParseError::InvalidSyntax(
+            "At least one MATCH or OPTIONAL MATCH clause required in read query".into(),
+        ));
+    }
+
     Ok(CypherQuery::Read {
-        match_clause: match_clause.ok_or_else(|| {
-            ParseError::InvalidSyntax("MATCH clause required in read query".into())
-        })?,
+        match_clauses,
         where_clause,
         return_clause: return_clause.ok_or_else(|| {
             ParseError::InvalidSyntax("RETURN clause required in read query".into())
@@ -108,7 +115,7 @@ fn build_mixed_query(pair: Pair<Rule>) -> ParseResult<CypherQuery> {
     for inner_pair in pair.into_inner() {
         match inner_pair.as_rule() {
             Rule::match_clause => {
-                match_clause = Some(build_match_clause(inner_pair)?);
+                match_clause = Some(build_match_clause(inner_pair, false)?);
             }
             Rule::where_clause => {
                 where_clause = Some(build_where_clause(inner_pair)?);
@@ -153,7 +160,7 @@ fn build_with_query(pair: Pair<Rule>) -> ParseResult<CypherQuery> {
     for inner_pair in pair.into_inner() {
         match inner_pair.as_rule() {
             Rule::match_clause => {
-                match_clause = Some(build_match_clause(inner_pair)?);
+                match_clause = Some(build_match_clause(inner_pair, false)?);
             }
             Rule::where_clause => {
                 if found_with {
@@ -190,14 +197,17 @@ fn build_with_query(pair: Pair<Rule>) -> ParseResult<CypherQuery> {
     })
 }
 
-fn build_match_clause(pair: Pair<Rule>) -> ParseResult<MatchClause> {
+fn build_match_clause(pair: Pair<Rule>, optional: bool) -> ParseResult<MatchClause> {
     let patterns: ParseResult<Vec<_>> = pair
         .into_inner()
         .filter(|p| p.as_rule() == Rule::pattern)
         .map(build_pattern)
         .collect();
 
-    Ok(MatchClause { patterns: patterns? })
+    Ok(MatchClause {
+        patterns: patterns?,
+        optional,
+    })
 }
 
 fn build_create_clause(pair: Pair<Rule>) -> ParseResult<WriteClause> {

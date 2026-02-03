@@ -8,9 +8,9 @@ use std::collections::HashMap;
 /// Top-level Cypher query
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum CypherQuery {
-    /// Read query: MATCH ... WHERE ... RETURN ...
+    /// Read query: MATCH ... OPTIONAL MATCH ... WHERE ... RETURN ...
     Read {
-        match_clause: MatchClause,
+        match_clauses: Vec<MatchClause>,
         where_clause: Option<WhereClause>,
         return_clause: ReturnClause,
     },
@@ -40,6 +40,7 @@ pub enum CypherQuery {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MatchClause {
     pub patterns: Vec<Pattern>,
+    pub optional: bool,
 }
 
 /// WHERE clause
@@ -380,7 +381,10 @@ mod tests {
     #[test]
     fn test_query_types() {
         let read_query = CypherQuery::Read {
-            match_clause: MatchClause { patterns: vec![] },
+            match_clauses: vec![MatchClause {
+                patterns: vec![],
+                optional: false,
+            }],
             where_clause: None,
             return_clause: ReturnClause {
                 items: vec![],
